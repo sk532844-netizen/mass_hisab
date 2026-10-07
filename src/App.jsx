@@ -302,6 +302,7 @@ function AdminApp({ session, onLogout }) {
         {tab === 'dash' && <>
           <h2>{data.month.label}</h2>
           <BalanceTable members={data.members} />
+          <ExpenseForm onDone={refresh} />
           <h3>সাম্প্রতিক খরচ</h3>
           <ExpenseList items={data.recent} />
         </>}
@@ -493,4 +494,5 @@ function MemberApp({ session, onLogout }) {
       </>}
     </div>
   );
-}
+
+        }
