@@ -1,1 +1,28 @@
+name: Deploy to GitHub Pages
 
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build-deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: npm install
+      - run: npm run build
+        env:
+          VITE_SUPABASE_URL: https://txwjonaarhhahfrblrjy.supabase.co
+          VITE_SUPABASE_ANON_KEY: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InR4d2pvbmFhcmhoYWhmcmJscmp5Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTEyOTI0MTEsImV4cCI6MjEwNjg2ODQxMX0.EhX815iAQBB1_S3kM_0kKd2SkamiKHMo16jgvUIu0B0
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+      - uses: actions/deploy-pages@v4
