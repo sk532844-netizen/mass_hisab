@@ -55,6 +55,10 @@ const BN_MONTHS = [
   'জানুয়ারি', 'ফেব্রুয়ারি', 'মার্চ', 'এপ্রিল', 'মে', 'জুন',
   'জুলাই', 'আগস্ট', 'সেপ্টেম্বর', 'অক্টোবর', 'নভেম্বর', 'ডিসেম্বর',
 ];
+const EN_MONTHS = [
+  'January', 'February', 'March', 'April', 'May', 'June',
+  'July', 'August', 'September', 'October', 'November', 'December',
+];
 const BN_DIGITS = ['০', '১', '২', '৩', '৪', '৫', '৬', '৭', '৮', '৯'];
 
 // ---------- small helpers ----------
@@ -86,6 +90,86 @@ function bnMonthLabel(year, month) {
     .map((d) => BN_DIGITS[Number(d)] ?? d)
     .join('');
   return `${BN_MONTHS[month - 1]} ${yBn}`;
+}
+
+// ---------- flexible periods ----------
+// পিরিয়ড ক্যালেন্ডার মাসে বাঁধা নয় — অ্যাডমিন যেদিন ক্লোজ করে সেদিন শেষ,
+// নতুন পিরিয়ড সেদিন থেকেই শুরু। পুরনো calendar-month ডকুমেন্টের সাথে
+// backward compatible (year/month থেকে start ধরা হয়)।
+
+export function periodStartMs(m) {
+  const s = m.startDate;
+  if (s && s.toMillis) return s.toMillis();
+  if (typeof s === 'string') {
+    const t = Date.parse(s);
+    if (!isNaN(t)) return t;
+  }
+  if (m.year && m.month) return new Date(m.year, m.month - 1, 1).getTime();
+  const c = m.createdAt;
+  if (c && c.toMillis) return c.toMillis();
+  if (typeof c === 'string') {
+    const t = Date.parse(c);
+    if (!isNaN(t)) return t;
+  }
+  return 0;
+}
+
+function periodEndMs(m) {
+  const e = m.endDate;
+  if (e && e.toMillis) return e.toMillis();
+  if (typeof e === 'string') {
+    const t = Date.parse(e);
+    if (!isNaN(t)) return t;
+  }
+  const c = m.closedAt;
+  if (c && c.toMillis) return c.toMillis();
+  if (typeof c === 'string') {
+    const t = Date.parse(c);
+    if (!isNaN(t)) return t;
+  }
+  return null;
+}
+
+const bnD = (n) =>
+  String(n)
+    .split('')
+    .map((d) => BN_DIGITS[Number(d)] ?? d)
+    .join('');
+
+function dayMonth(ms, lang) {
+  const d = new Date(ms);
+  const day = d.getDate();
+  if (lang === 'en') return `${day} ${EN_MONTHS[d.getMonth()]}`;
+  return `${bnD(day)} ${BN_MONTHS[d.getMonth()]}`;
+}
+
+// "১–১৩ অক্টোবর ২০২৬" / "1–13 October 2026"
+export function periodRangeLabel(startMs, endMs, lang) {
+  const s = new Date(startMs);
+  const e = new Date(endMs);
+  const en = lang === 'en';
+  const dd = (n) => (en ? String(n) : bnD(n));
+  const mm = (i) => (en ? EN_MONTHS[i] : BN_MONTHS[i]);
+  const yy = (y) => (en ? String(y) : bnD(y));
+  if (s.getFullYear() === e.getFullYear() && s.getMonth() === e.getMonth())
+    return `${dd(s.getDate())}–${dd(e.getDate())} ${mm(s.getMonth())} ${yy(s.getFullYear())}`;
+  if (s.getFullYear() === e.getFullYear())
+    return `${dd(s.getDate())} ${mm(s.getMonth())} – ${dd(e.getDate())} ${mm(e.getMonth())} ${yy(s.getFullYear())}`;
+  return `${dd(s.getDate())} ${mm(s.getMonth())} ${yy(s.getFullYear())} – ${dd(e.getDate())} ${mm(e.getMonth())} ${yy(e.getFullYear())}`;
+}
+
+// পিরিয়ডের display লেবেল (lang-aware) — raw month ডকুমেন্ট নেয়
+export function periodDisplay(m, lang) {
+  const en = lang === 'en';
+  const startMs = periodStartMs(m);
+  if (m.status === 'closed') {
+    const endMs = periodEndMs(m) || startMs;
+    const r = periodRangeLabel(startMs, endMs, lang);
+    return m.note ? `${m.note} (${r})` : r;
+  }
+  const s = dayMonth(startMs, lang);
+  if (m.note) return en ? `${m.note} (${s} – ongoing)` : `${m.note} (${s} থেকে চলমান)`;
+  return en ? `Ongoing since ${s}` : `${s} থেকে চলমান`;
 }
 
 const iso = (ts) => (ts && ts.toDate ? ts.toDate().toISOString() : null);
@@ -150,30 +234,37 @@ function expensesCol(db, messId) {
 function advancesCol(db, messId) {
   return collection(db, 'messes', messId, 'advances');
 }
+function paymentsCol(db, messId) {
+  return collection(db, 'messes', messId, 'payments');
+}
 
-// চলতি মাসের open month doc — না থাকলে বানায়, closed থাকলে error।
-async function ensureOpenMonth(db, messId, tok) {
-  const now = new Date();
-  const y = now.getFullYear();
-  const m = now.getMonth() + 1;
-  const ref = doc(db, 'messes', messId, 'months', `${y}-${m}`);
-  const snap = await getDoc(ref);
-  if (snap.exists()) {
-    const d = snap.data();
-    if (d.status === 'closed') throw new Error('এই মাস ক্লোজ হয়ে গেছে');
-    return { id: snap.id, ...d };
+// খোলা পিরিয়ড — না থাকলে এখন থেকে শুরু করে বানায়।
+async function ensureOpenPeriod(db, messId, tok) {
+  const snap = await getDocs(
+    query(monthsCol(db, messId), where('status', '==', 'open')),
+  );
+  if (!snap.empty) {
+    const docs = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+    docs.sort((a, b) => periodStartMs(b) - periodStartMs(a));
+    return docs[0];
   }
+  const now = Timestamp.now();
   const data = {
-    year: y,
-    month: m,
-    label: bnMonthLabel(y, m),
+    startDate: now,
+    endDate: null,
+    note: null,
     status: 'open',
     closedAt: null,
-    createdAt: Timestamp.now(),
+    createdAt: now,
+    ...(tok ? { tok } : {}),
   };
-  // signup-এর সময় tok থাকে না — rules-এ months create token ছাড়াই allowed।
-  await setDoc(ref, tok ? { ...data, tok } : data);
+  const ref = await addDoc(monthsCol(db, messId), data);
   return { id: ref.id, ...data };
+}
+
+// পুরনো নামে wrapper (ভেতরে period ব্যবহার করে)
+async function ensureOpenMonth(db, messId, tok) {
+  return ensureOpenPeriod(db, messId, tok);
 }
 
 // খালি join code দাবি করা — transaction দিয়ে atomic claim।
@@ -256,16 +347,14 @@ export async function signupAdmin({ messName, username, password, displayName })
     recoveryCodeHash: null,
     createdAt: Timestamp.now(),
   });
-  const now = new Date();
-  const y = now.getFullYear();
-  const m = now.getMonth() + 1;
-  batch.set(doc(db, 'messes', messId, 'months', `${y}-${m}`), {
-    year: y,
-    month: m,
-    label: bnMonthLabel(y, m),
+  const nowTs = Timestamp.now();
+  batch.set(doc(collection(db, 'messes', messId, 'months')), {
+    startDate: nowTs,
+    endDate: null,
+    note: null,
     status: 'open',
     closedAt: null,
-    createdAt: Timestamp.now(),
+    createdAt: nowTs,
   });
   await batch.commit();
 
@@ -564,47 +653,177 @@ export async function monthRecords(monthId) {
   };
 }
 
-// ---------- monthly close ----------
+// ---------- payments (ফান্ডে জমা / ফান্ড থেকে পরিশোধ) ----------
+// kind 'in': মেম্বার → ফান্ডে জমা দিলো; 'out': ফান্ড → মেম্বারকে দিলো।
 
-export async function closeMonth() {
+export async function recordPayment(monthId, memberId, kind, amount, note) {
+  const { db, token, me, mess } = await sessionCtx();
+  requireAdmin(me);
+  if (kind !== 'in' && kind !== 'out') throw new Error('FORBIDDEN');
+  if (amount == null || Number(amount) <= 0)
+    throw new Error('সঠিক টাকার পরিমাণ দাও');
+  const uSnap = await getDoc(doc(db, 'messes', mess.id, 'users', memberId));
+  if (!uSnap.exists()) throw new Error('NOT_FOUND');
+  const mSnap = await getDoc(doc(db, 'messes', mess.id, 'months', monthId));
+  if (!mSnap.exists()) throw new Error('NOT_FOUND');
+  await addDoc(paymentsCol(db, mess.id), {
+    monthId,
+    memberId,
+    kind,
+    amount: Number(amount),
+    note: (note || '').trim() || null,
+    recordedBy: me.id,
+    createdAt: Timestamp.now(),
+    tok: token,
+  });
+}
+
+export async function deletePayment(paymentId) {
+  const { db, me, mess } = await sessionCtx();
+  requireAdmin(me);
+  const ref = doc(db, 'messes', mess.id, 'payments', paymentId);
+  const snap = await getDoc(ref);
+  if (!snap.exists()) throw new Error('NOT_FOUND');
+  await deleteDoc(ref);
+}
+
+// ---------- fund settlement ----------
+// ফান্ড = মোট অ্যাডভান্স (অ্যাডমিনের কাছে জমা)।
+// যারা দেবে → ফান্ডে জমা দেবে; যারা পাবে → ফান্ড থেকে পাবে।
+export function fundSettlement(members, payments) {
+  const total = members.reduce((s, m) => s + Number(m.paid), 0);
+  const share = members.length ? total / members.length : 0;
+  const fundTotal = members.reduce((s, m) => s + Number(m.advance), 0);
+  const rows = members.map((m) => {
+    const contributed = Number(m.paid) + Number(m.advance);
+    return { ...m, contributed, share, balance: contributed - share };
+  });
+  const paidIn = {};
+  const paidOut = {};
+  for (const p of payments || []) {
+    const amt = Number(p.amount) || 0;
+    if (p.kind === 'in') paidIn[p.memberId] = (paidIn[p.memberId] || 0) + amt;
+    else paidOut[p.memberId] = (paidOut[p.memberId] || 0) + amt;
+  }
+  const debtors = [];
+  const creditors = [];
+  for (const r of rows) {
+    if (r.balance < -0.5) {
+      const owe = -r.balance;
+      const done = paidIn[r.id] || 0;
+      debtors.push({ ...r, owe, paid: done, remaining: Math.max(0, owe - done) });
+    } else if (r.balance > 0.5) {
+      const get = r.balance;
+      const done = paidOut[r.id] || 0;
+      creditors.push({ ...r, get, paid: done, remaining: Math.max(0, get - done) });
+    }
+  }
+  debtors.sort((a, b) => b.remaining - a.remaining);
+  creditors.sort((a, b) => b.remaining - a.remaining);
+  return {
+    rows,
+    total,
+    share,
+    fundTotal,
+    debtors,
+    creditors,
+    dueIn: debtors.reduce((s, d) => s + d.remaining, 0),
+    dueOut: creditors.reduce((s, c) => s + c.remaining, 0),
+  };
+}
+
+// ---------- split expense ----------
+// একটা খরচ একাধিক মেম্বারের মধ্যে ভাগ — প্রত্যেকের নামে আলাদা রেকর্ড
+// (একই splitGroup), সব pending হয়ে অ্যাডমিনের অনুমোদনের জন্য যাবে।
+
+export async function submitSplitExpense({ amount, category, note, splits }) {
+  const { db, token, me, mess } = await sessionCtx();
+  if (!splits || splits.length < 2)
+    throw new Error('কমপক্ষে ২ জন সিলেক্ট করো');
+  for (const s of splits) {
+    if (!s.memberId || !(Number(s.amount) > 0))
+      throw new Error('সবার ভাগে সঠিক টাকা দাও');
+  }
+  const splitTotal = splits.reduce((x, s) => x + Number(s.amount), 0);
+  if (amount != null && Math.abs(Number(amount) - splitTotal) > 0.01)
+    throw new Error('ভাগের যোগফল মোট টাকার সমান হতে হবে');
+  const month = await ensureOpenPeriod(db, mess.id, token);
+  const uSnap = await getDocs(query(usersCol(db, mess.id), orderBy('createdAt')));
+  const users = uSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
+  const groupId = newId();
+  const batch = writeBatch(db);
+  splits.forEach((s, i) => {
+    const u = users.find((x) => x.id === s.memberId);
+    if (!u || u.active === false) throw new Error('NOT_FOUND');
+    const ref = doc(collection(db, 'messes', mess.id, 'expenses'));
+    batch.set(ref, {
+      monthId: month.id,
+      submittedBy: s.memberId,
+      submittedByName: u.displayName,
+      amount: Number(s.amount),
+      category: (category || '').trim() || 'অন্যান্য',
+      note: (note || '').trim() || null,
+      status: 'pending',
+      splitGroup: groupId,
+      splitIndex: i,
+      splitCount: splits.length,
+      reviewedBy: null,
+      reviewNote: null,
+      createdAt: Timestamp.now(),
+      tok: token,
+    });
+  });
+  await batch.commit();
+  return { groupId, count: splits.length };
+}
+
+export async function closePeriod() {
   const { db, token, me, mess } = await sessionCtx();
   requireAdmin(me);
   const snap = await getDocs(
     query(monthsCol(db, mess.id), where('status', '==', 'open')),
   );
-  if (snap.empty) throw new Error('কোনো খোলা মাস নেই');
+  if (snap.empty) throw new Error('কোনো খোলা পিরিয়ড নেই');
   const docs = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
-  // সবচেয়ে পুরনো খোলা মাস আগে বন্ধ হবে — নইলে ক্লোজ না করে পরের মাসে
-  // ঢুকে গেলে পুরনো মাসের ডেটা চিরতরে অদৃশ্য হয়ে যেত।
-  docs.sort((a, b) => a.year - b.year || a.month - b.month);
+  // সবচেয়ে পুরনো খোলা পিরিয়ড আগে বন্ধ হবে
+  docs.sort((a, b) => periodStartMs(a) - periodStartMs(b));
   const cur = docs[0];
 
-  let ny = cur.year;
-  let nm = cur.month + 1;
-  if (nm > 12) {
-    nm = 1;
-    ny += 1;
-  }
+  const now = Timestamp.now();
+  const startMs = periodStartMs(cur);
   const batch = writeBatch(db);
   batch.update(doc(db, 'messes', mess.id, 'months', cur.id), {
     status: 'closed',
-    closedAt: Timestamp.now(),
+    endDate: now,
+    closedAt: now,
     tok: token,
   });
-  const nextRef = doc(db, 'messes', mess.id, 'months', `${ny}-${nm}`);
-  const nextSnap = await getDoc(nextRef);
-  if (!nextSnap.exists()) {
-    batch.set(nextRef, {
-      year: ny,
-      month: nm,
-      label: bnMonthLabel(ny, nm),
-      status: 'open',
-      closedAt: null,
-      createdAt: Timestamp.now(),
-    });
-  }
+  batch.set(doc(collection(db, 'messes', mess.id, 'months')), {
+    startDate: now,
+    endDate: null,
+    note: null,
+    status: 'open',
+    closedAt: null,
+    createdAt: now,
+    tok: token,
+  });
   await batch.commit();
-  return { closed: cur.label, new_month: bnMonthLabel(ny, nm) };
+  return { closedId: cur.id, startMs, endMs: now.toMillis() };
+}
+
+// পুরনো নামে wrapper
+export async function closeMonth() {
+  const r = await closePeriod();
+  return { closed: periodRangeLabel(r.startMs, r.endMs, 'bn'), new_month: '' };
+}
+
+export async function setPeriodNote(monthId, note) {
+  const { db, token, me, mess } = await sessionCtx();
+  requireAdmin(me);
+  const ref = doc(db, 'messes', mess.id, 'months', monthId);
+  const snap = await getDoc(ref);
+  if (!snap.exists()) throw new Error('NOT_FOUND');
+  await updateDoc(ref, { note: (note || '').trim() || null, tok: token });
 }
 
 // ---------- dashboard & history ----------
@@ -617,23 +836,27 @@ export async function dashboard() {
   );
   let month;
   if (mSnap.empty) {
-    month = await ensureOpenMonth(db, mess.id, token);
+    month = await ensureOpenPeriod(db, mess.id, token);
   } else {
     const docs = mSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
-    docs.sort((a, b) => b.year - a.year || b.month - a.month);
+    docs.sort((a, b) => periodStartMs(b) - periodStartMs(a));
     month = docs[0];
   }
 
-  const [uSnap, eSnap, aSnap] = await Promise.all([
+  const [uSnap, eSnap, aSnap, pSnap] = await Promise.all([
     getDocs(query(usersCol(db, mess.id), orderBy('createdAt'))),
     getDocs(query(expensesCol(db, mess.id), where('monthId', '==', month.id))),
     getDocs(query(advancesCol(db, mess.id), where('monthId', '==', month.id))),
+    getDocs(query(paymentsCol(db, mess.id), where('monthId', '==', month.id))),
   ]);
   const users = uSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
   const expenses = eSnap.docs
     .map((d) => ({ id: d.id, ...d.data() }))
     .sort((a, b) => b.createdAt.toMillis() - a.createdAt.toMillis());
   const advances = aSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
+  const payments = pSnap.docs
+    .map((d) => ({ id: d.id, ...d.data() }))
+    .sort((a, b) => b.createdAt.toMillis() - a.createdAt.toMillis());
 
   const isAdmin = me.role === 'admin';
   const visible = (e) => isAdmin || e.submittedBy === me.id;
@@ -660,8 +883,35 @@ export async function dashboard() {
     at: iso(e.createdAt),
   });
 
+  const payJson = (p) => ({
+    id: p.id,
+    memberId: p.memberId,
+    kind: p.kind,
+    amount: num(p.amount),
+    note: p.note,
+    at: iso(p.createdAt),
+  });
+
+  const byCatMap = {};
+  expenses
+    .filter((e) => e.status === 'approved')
+    .forEach((e) => {
+      const c = e.category || 'অন্যান্য';
+      byCatMap[c] = (byCatMap[c] || 0) + num(e.amount);
+    });
+  const byCategory = Object.entries(byCatMap)
+    .map(([category, total]) => ({ category, total }))
+    .sort((a, b) => b.total - a.total);
+
   return {
-    month: { id: month.id, label: month.label, status: month.status },
+    month: {
+      id: month.id,
+      status: month.status,
+      startDate: iso(month.startDate) || null,
+      endDate: iso(month.endDate) || null,
+      closedAt: iso(month.closedAt),
+      note: month.note || null,
+    },
     role: me.role,
     members,
     pending: expenses
@@ -687,6 +937,8 @@ export async function dashboard() {
             };
           })
       : [],
+    payments: payments.map(payJson),
+    byCategory,
     totals: {
       approved: expenses
         .filter((e) => e.status === 'approved')
@@ -707,25 +959,48 @@ export async function monthHistory() {
   ]);
   const months = mSnap.docs
     .map((d) => ({ id: d.id, ...d.data() }))
-    .sort((a, b) => b.year - a.year || b.month - a.month);
+    .sort((a, b) => periodStartMs(b) - periodStartMs(a));
   const users = uSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
 
   const out = [];
   for (const m of months) {
-    const [eSnap, aSnap] = await Promise.all([
+    const [eSnap, aSnap, pSnap] = await Promise.all([
       getDocs(query(expensesCol(db, mess.id), where('monthId', '==', m.id))),
       getDocs(query(advancesCol(db, mess.id), where('monthId', '==', m.id))),
+      getDocs(query(paymentsCol(db, mess.id), where('monthId', '==', m.id))),
     ]);
     const expenses = eSnap.docs.map((d) => d.data());
     const advances = aSnap.docs.map((d) => d.data());
+    const payments = pSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
+    const byCatMap = {};
+    expenses
+      .filter((e) => e.status === 'approved')
+      .forEach((e) => {
+        const c = e.category || 'অন্যান্য';
+        byCatMap[c] = (byCatMap[c] || 0) + num(e.amount);
+      });
     out.push({
       id: m.id,
-      label: m.label,
+      status: m.status,
+      startDate: iso(m.startDate) || null,
+      endDate: iso(m.endDate) || null,
+      note: m.note || null,
       closed_at: iso(m.closedAt),
       total_expense: expenses
         .filter((e) => e.status === 'approved')
         .reduce((s, e) => s + num(e.amount), 0),
       total_advance: advances.reduce((s, a) => s + num(a.amount), 0),
+      byCategory: Object.entries(byCatMap)
+        .map(([category, total]) => ({ category, total }))
+        .sort((a, b) => b.total - a.total),
+      payments: payments.map((p) => ({
+        id: p.id,
+        memberId: p.memberId,
+        kind: p.kind,
+        amount: num(p.amount),
+        note: p.note,
+        at: iso(p.createdAt),
+      })),
       members: users.map((u) => ({
         display_name: u.displayName,
         paid: expenses
