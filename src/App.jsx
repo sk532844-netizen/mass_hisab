@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, Component } from 'react';
 import * as api from './lib/api';
 
 const loadSession = () => {
@@ -35,10 +35,31 @@ export default function App() {
   };
 
   if (checking) return <div className="wrap"><p className="center">লোড হচ্ছে…</p></div>;
-  if (!session) return <><SetupNotice /><AuthScreen onDone={done} /></>;
-  return <><SetupNotice />{session.user.role === 'admin'
-    ? <AdminApp session={session} onLogout={out} />
-    : <MemberApp session={session} onLogout={out} />}</>;
+  if (!session) return <><SetupNotice /><ErrorBoundary key="auth"><AuthScreen onDone={done} /></ErrorBoundary></>;
+  return <><SetupNotice /><ErrorBoundary key={session.token || 's'}>
+    {session.user.role === 'admin'
+      ? <AdminApp key={session.token} session={session} onLogout={out} />
+      : <MemberApp key={session.token} session={session} onLogout={out} />}
+  </ErrorBoundary></>;
+}
+
+// কোনো render error হলে সাদা blank পেজের বদলে কারণ + রিফ্রেশ বাটন দেখাবে।
+class ErrorBoundary extends Component {
+  constructor(p) { super(p); this.state = { err: null }; }
+  static getDerivedStateFromError(e) { return { err: e }; }
+  componentDidCatch(e) { console.error(e); }
+  render() {
+    if (this.state.err) {
+      return (
+        <div className="wrap"><div className="card">
+          <h3>কিছু একটা সমস্যা হয়েছে 😓</h3>
+          <p className="dim">{String((this.state.err && this.state.err.message) || this.state.err)}</p>
+          <button onClick={() => window.location.reload()}>রিফ্রেশ করো</button>
+        </div></div>
+      );
+    }
+    return this.props.children;
+  }
 }
 
 // Firebase config না থাকলে বন্ধুত্বপূর্ণ নোটিশ — app crash করবে না।
@@ -332,11 +353,13 @@ function ExpenseForm({ onDone }) {
 function AdminApp({ session, onLogout }) {
   const [tab, setTab] = useState('dash');
   const [data, setData] = useState(null);
+  const [failed, setFailed] = useState(false);
   const [reload, setReload] = useState(0);
   useEffect(() => {
-    api.dashboard().then(setData).catch(() => {});
+    setFailed(false);
+    api.dashboard().then(setData).catch(() => setFailed(true));
   }, [reload]);
-  const refresh = () => setReload((r) => r + 1);
+  const refresh = () => { setFailed(false); setReload((r) => r + 1); };
 
   return (
     <div className="wrap">
@@ -347,7 +370,14 @@ function AdminApp({ session, onLogout }) {
           <button key={k} className={tab === k ? 'on' : ''} onClick={() => setTab(k)}>{l}</button>
         ))}
       </div>
-      {!data ? <p className="center">লোড হচ্ছে…</p> : <>
+      {failed
+        ? <div className="card"><h3>ডেটা লোড করা যাচ্ছে না 😓</h3>
+            <p className="dim">ইন্টারনেট চেক করে আবার চেষ্টা করো।</p>
+            <div className="btnrow">
+              <button onClick={refresh}>আবার চেষ্টা করো</button>
+              <button className="ghost" onClick={onLogout}>লগইন স্ক্রিনে যাও</button>
+            </div></div>
+        : !data ? <p className="center">লোড হচ্ছে…</p> : <>
         {tab === 'dash' && <>
           <h2>{data.month.label}</h2>
           <BalanceTable members={data.members} />
@@ -541,17 +571,26 @@ function MonthManager({ month, onDone, reloadKey }) {
 
 function MemberApp({ session, onLogout }) {
   const [data, setData] = useState(null);
+  const [failed, setFailed] = useState(false);
   const [reload, setReload] = useState(0);
   useEffect(() => {
-    api.dashboard().then(setData).catch(() => {});
+    setFailed(false);
+    api.dashboard().then(setData).catch(() => setFailed(true));
   }, [reload]);
-  const refresh = () => setReload((r) => r + 1);
+  const refresh = () => { setFailed(false); setReload((r) => r + 1); };
   const me = data?.members.find((m) => m.id === session.user.id);
 
   return (
     <div className="wrap">
       <Header session={session} onLogout={onLogout} />
-      {!data ? <p className="center">লোড হচ্ছে…</p> : <>
+      {failed
+        ? <div className="card"><h3>ডেটা লোড করা যাচ্ছে না 😓</h3>
+            <p className="dim">ইন্টারনেট চেক করে আবার চেষ্টা করো।</p>
+            <div className="btnrow">
+              <button onClick={refresh}>আবার চেষ্টা করো</button>
+              <button className="ghost" onClick={onLogout}>লগইন স্ক্রিনে যাও</button>
+            </div></div>
+        : !data ? <p className="center">লোড হচ্ছে…</p> : <>
         <h2>{data.month.label}</h2>
         {me && (
           <div className="stats">
