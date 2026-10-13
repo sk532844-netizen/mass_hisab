@@ -45,9 +45,12 @@ export default function App() {
 
 // কোনো render error হলে সাদা blank পেজের বদলে কারণ + রিফ্রেশ বাটন দেখাবে।
 class ErrorBoundary extends Component {
-  constructor(p) { super(p); this.state = { err: null }; }
+  constructor(p) { super(p); this.state = { err: null, stack: '' }; }
   static getDerivedStateFromError(e) { return { err: e }; }
-  componentDidCatch(e) { console.error(e); }
+  componentDidCatch(e, info) {
+    console.error(e);
+    this.setState({ stack: String((e && e.stack) || '') + '\n---\n' + String((info && info.componentStack) || '') });
+  }
   render() {
     if (this.state.err) {
       return (
@@ -55,6 +58,12 @@ class ErrorBoundary extends Component {
           <h3>কিছু একটা সমস্যা হয়েছে 😓</h3>
           <p className="dim">{String((this.state.err && this.state.err.message) || this.state.err)}</p>
           <button onClick={() => window.location.reload()}>রিফ্রেশ করো</button>
+          {this.state.stack && (
+            <details><summary className="dim">টেকনিক্যাল বিবরণ</summary>
+              <pre className="dim" style={{ fontSize: 11, whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>
+                {this.state.stack.slice(0, 1500)}
+              </pre></details>
+          )}
         </div></div>
       );
     }
