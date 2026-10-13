@@ -279,8 +279,8 @@ function BalanceTable({ members }) {
       <table className="tbl">
         <thead><tr><th>নাম</th><th>খরচ দিয়েছে</th><th>অ্যাডভান্স</th><th>ব্যালেন্স</th></tr></thead>
         <tbody>
-          {s.rows.map((r) => (
-            <tr key={r.id}>
+          {s.rows.map((r, i) => (
+            <tr key={r.id || i}>
               <td>{r.display_name}{r.role === 'admin' ? ' 👑' : ''}{r.active === false ? ' (নিষ্ক্রিয়)' : ''}</td>
               <td>{api.fmt(r.paid)}</td>
               <td>{api.fmt(r.advance)}</td>
@@ -315,15 +315,8 @@ function History({ reloadKey, admin }) {
   return hist.map((h, i) => (
     <div className="card" key={h.id || i}>
       <h3>{h.label}</h3>
-      <p>মোট খরচ: <b>{api.fmt(h.total_expense)}</b> · মোট অ্যাডভান্স: <b>{api.fmt(h.total_advance)}</b></p>
-      <table className="tbl">
-        <thead><tr><th>নাম</th><th>খরচ</th><th>অ্যাডভান্স</th></tr></thead>
-        <tbody>
-          {(h.members || []).map((m, j) => (
-            <tr key={j}><td>{m.display_name}</td><td>{api.fmt(m.paid)}</td><td>{api.fmt(m.advance)}</td></tr>
-          ))}
-        </tbody>
-      </table>
+      <p className="dim">মোট অ্যাডভান্স: <b>{api.fmt(h.total_advance)}</b></p>
+      <BalanceTable members={h.members || []} />
       {admin && (
         <button className="ghost sm" onClick={() => setOpen(open === h.id ? null : h.id)}>
           {open === h.id ? '▲ বন্ধ করো' : '▼ রেকর্ড দেখো / ঠিক করো'}
