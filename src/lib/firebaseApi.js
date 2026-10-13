@@ -115,6 +115,16 @@ async function sessionCtx() {
 
   const u = uSnap.data();
   const m = mSnap.data();
+  // পাসওয়ার্ড রিসেটের পর পুরনো সেশন বাতিল: user-এর sessionValidAfter-এর
+  // আগের তৈরি সেশন reject হয় (sessions collection query ছাড়াই —
+  // rules-এ sessions list নিষেধ)।
+  if (
+    u.sessionValidAfter &&
+    s.createdAt.toMillis() < u.sessionValidAfter.toMillis()
+  ) {
+    await deleteDoc(doc(db, 'sessions', token)).catch(() => {});
+    throw new Error('সেশন শেষ — আবার লগইন করো');
+  }
   return {
     db,
     token,
@@ -351,13 +361,12 @@ export async function removeMember(userId) {
     if (admins.size <= 1) throw new Error('শেষ অ্যাডমিনকে বাদ দেওয়া যাবে না');
   }
 
-  // Cascade: ওর সেশন, জমা দেওয়া খরচ, আর ওর নামের অ্যাডভান্স মুছে দাও
+  // Cascade: ওর জমা দেওয়া খরচ, আর ওর নামের অ্যাডভান্স মুছে দাও
   // (পুরনো SQL-এ FK cascade একই কাজ করত)।
+  // নোট: ওর সেশন ডকুমেন্টগুলো query করে মোছা যায় না (rules-এ sessions
+  // list নিষেধ) — তবে user doc মুছে যাওয়ায় sessionCtx() আর ওই সেশন
+  // accept করে না, তাই orphan সেশন harmless।
   const batch = writeBatch(db);
-  const sessQ = await getDocs(
-    query(collection(db, 'sessions'), where('userId', '==', userId)),
-  );
-  sessQ.docs.forEach((d) => batch.delete(d.ref));
   const expQ = await getDocs(
     query(expensesCol(db, mess.id), where('submittedBy', '==', userId)),
   );
@@ -623,16 +632,13 @@ export async function resetPasswordSelf(joinCode, username, recoveryCode, newPas
   if (!newPassword || newPassword.length < 4)
     throw new Error('পাসওয়ার্ড কমপক্ষে ৪ অক্ষরের হতে হবে');
 
-  const batch = writeBatch(db);
-  batch.update(doc(db, 'messes', messId, 'users', u.id), {
+  // পুরনো সেশন বাতিল: sessionValidAfter বসিয়ে দিলে sessionCtx()
+  // পুরনো token গুলো reject করে — sessions collection query করা লাগে না
+  // (rules-এ sessions list নিষেধ, তাই query পদ্ধতি কাজ করে না)।
+  await updateDoc(doc(db, 'messes', messId, 'users', u.id), {
     passwordHash: await sha256Hex(newPassword),
+    sessionValidAfter: Timestamp.now(),
   });
-  // পুরনো সেশন বাতিল
-  const sessQ = await getDocs(
-    query(collection(db, 'sessions'), where('userId', '==', u.id)),
-  );
-  sessQ.docs.forEach((d) => batch.delete(d.ref));
-  await batch.commit();
 }
 
 // ---------- pure helpers (UI) ----------
