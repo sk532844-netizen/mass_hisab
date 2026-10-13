@@ -1008,7 +1008,10 @@ export async function monthHistory() {
         at: iso(p.createdAt),
       })),
       members: users.map((u) => ({
+        id: u.id,
         display_name: u.displayName,
+        role: u.role,
+        active: u.active,
         paid: expenses
           .filter((e) => e.submittedBy === u.id && e.status === 'approved')
           .reduce((s, e) => s + num(e.amount), 0),
