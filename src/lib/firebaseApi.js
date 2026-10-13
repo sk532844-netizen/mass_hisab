@@ -115,6 +115,7 @@ async function sessionCtx() {
 
   const u = uSnap.data();
   const m = mSnap.data();
+  if (u.active === false) throw new Error('এই অ্যাকাউন্ট নিষ্ক্রিয় করা হয়েছে');
   // পাসওয়ার্ড রিসেটের পর পুরনো সেশন বাতিল: user-এর sessionValidAfter-এর
   // আগের তৈরি সেশন reject হয় (sessions collection query ছাড়াই —
   // rules-এ sessions list নিষেধ)।
@@ -212,6 +213,7 @@ function publicUser(u) {
     display_name: u.displayName,
     username: u.username,
     role: u.role,
+    active: u.active !== false,
   };
 }
 
@@ -290,6 +292,8 @@ export async function login(joinCode, username, password) {
   const u = await findUserByName(db, messId, username || '');
   if (!u || u.passwordHash !== (await sha256Hex(password || '')))
     throw new Error('ভুল ইউজারনেম বা পাসওয়ার্ড');
+  if (u.active === false)
+    throw new Error('এই অ্যাকাউন্ট নিষ্ক্রিয় করা হয়েছে — অ্যাডমিনের সাথে যোগাযোগ করো');
 
   const token = await createSession(db, messId, u.id);
   const mSnap = await getDoc(doc(db, 'messes', messId));
@@ -347,36 +351,53 @@ export async function addMember(username, password, displayName) {
   };
 }
 
-export async function removeMember(userId) {
-  const { db, me, mess } = await sessionCtx();
-  requireAdmin(me);
-  const tSnap = await getDoc(doc(db, 'messes', mess.id, 'users', userId));
-  if (!tSnap.exists()) throw new Error('NOT_FOUND');
-  const t = tSnap.data();
-  if (userId === me.id) throw new Error('নিজেকে বাদ দেওয়া যাবে না');
-  if (t.role === 'admin') {
-    const admins = await getDocs(
-      query(usersCol(db, mess.id), where('role', '==', 'admin')),
-    );
-    if (admins.size <= 1) throw new Error('শেষ অ্যাডমিনকে বাদ দেওয়া যাবে না');
-  }
+// ---------- roles & active ----------
 
-  // Cascade: ওর জমা দেওয়া খরচ, আর ওর নামের অ্যাডভান্স মুছে দাও
-  // (পুরনো SQL-এ FK cascade একই কাজ করত)।
-  // নোট: ওর সেশন ডকুমেন্টগুলো query করে মোছা যায় না (rules-এ sessions
-  // list নিষেধ) — তবে user doc মুছে যাওয়ায় sessionCtx() আর ওই সেশন
-  // accept করে না, তাই orphan সেশন harmless।
-  const batch = writeBatch(db);
-  const expQ = await getDocs(
-    query(expensesCol(db, mess.id), where('submittedBy', '==', userId)),
+// সক্রিয় অ্যাডমিন সংখ্যা (active ফিল্ড না থাকলে সক্রিয় ধরা হয়)
+async function adminCount(db, messId) {
+  const snap = await getDocs(
+    query(usersCol(db, messId), where('role', '==', 'admin')),
   );
-  expQ.docs.forEach((d) => batch.delete(d.ref));
-  const advQ = await getDocs(
-    query(advancesCol(db, mess.id), where('memberId', '==', userId)),
-  );
-  advQ.docs.forEach((d) => batch.delete(d.ref));
-  batch.delete(doc(db, 'messes', mess.id, 'users', userId));
-  await batch.commit();
+  return snap.docs.filter((d) => d.data().active !== false).length;
+}
+
+// মেম্বারকে অ্যাডমিন বানানো / অ্যাডমিনকে মেম্বার করা (শুধু অ্যাডমিন)।
+// নিজের পদ নিজে ছাড়লে { selfDemoted: true } — UI রিলোড করবে।
+export async function setMemberRole(userId, role) {
+  const { db, token, me, mess } = await sessionCtx();
+  requireAdmin(me);
+  if (role !== 'admin' && role !== 'member') throw new Error('FORBIDDEN');
+  const ref = doc(db, 'messes', mess.id, 'users', userId);
+  const snap = await getDoc(ref);
+  if (!snap.exists()) throw new Error('NOT_FOUND');
+  const t = snap.data();
+  if (t.active === false && role === 'admin')
+    throw new Error('নিষ্ক্রিয় মেম্বারকে অ্যাডমিন করা যাবে না');
+  if (t.role === role) return { selfDemoted: false };
+  if (role === 'member' && t.role === 'admin') {
+    if ((await adminCount(db, mess.id)) <= 1)
+      throw new Error('শেষ অ্যাডমিনের পদ বদলানো যাবে না — আগে অন্য কাউকে অ্যাডমিন করো');
+  }
+  await updateDoc(ref, { role, tok: token });
+  return { selfDemoted: userId === me.id && role === 'member' };
+}
+
+// মেম্বার নিষ্ক্রিয়/সক্রিয় করা (শুধু অ্যাডমিন)।
+// ডিলিটের বদলে নিষ্ক্রিয় — পুরনো খরচ/অ্যাডভান্সের রেকর্ড অটুট থাকে,
+// লগইন বন্ধ হয় সাথে সাথে (sessionCtx active চেক করে)।
+export async function setMemberActive(userId, active) {
+  const { db, token, me, mess } = await sessionCtx();
+  requireAdmin(me);
+  if (userId === me.id) throw new Error('নিজেকে নিষ্ক্রিয় করা যাবে না');
+  const ref = doc(db, 'messes', mess.id, 'users', userId);
+  const snap = await getDoc(ref);
+  if (!snap.exists()) throw new Error('NOT_FOUND');
+  const t = snap.data();
+  if (!active && t.role === 'admin' && t.active !== false) {
+    if ((await adminCount(db, mess.id)) <= 1)
+      throw new Error('শেষ অ্যাডমিনকে নিষ্ক্রিয় করা যাবে না');
+  }
+  await updateDoc(ref, { active: !!active, tok: token });
 }
 
 export async function resetMemberPassword(userId, newPassword) {
@@ -449,6 +470,100 @@ export async function recordAdvance(memberId, amount, note) {
   return { id: ref.id };
 }
 
+// ---------- edit / delete (শুধু অ্যাডমিন) ----------
+// ভুল খরচ/অ্যাডভান্স ঠিক করা — চলতি মাস বা বন্ধ মাস, দুটোতেই কাজ করে
+// (ইতিহাস raw রেকর্ড থেকে live হিসাব হয়, তাই auto ঠিক হয়ে যায়)।
+
+export async function updateExpense(expenseId, { amount, category, note }) {
+  const { db, token, me, mess } = await sessionCtx();
+  requireAdmin(me);
+  if (amount == null || Number(amount) <= 0)
+    throw new Error('সঠিক টাকার পরিমাণ দাও');
+  if (!category || !String(category).trim())
+    throw new Error('ক্যাটাগরি দাও');
+  const ref = doc(db, 'messes', mess.id, 'expenses', expenseId);
+  const snap = await getDoc(ref);
+  if (!snap.exists()) throw new Error('NOT_FOUND');
+  await updateDoc(ref, {
+    amount: Number(amount),
+    category: String(category).trim(),
+    note: (note || '').trim() || null,
+    tok: token,
+  });
+}
+
+export async function deleteExpense(expenseId) {
+  const { db, me, mess } = await sessionCtx();
+  requireAdmin(me);
+  const ref = doc(db, 'messes', mess.id, 'expenses', expenseId);
+  const snap = await getDoc(ref);
+  if (!snap.exists()) throw new Error('NOT_FOUND');
+  await deleteDoc(ref);
+}
+
+export async function updateAdvance(advanceId, { amount, note }) {
+  const { db, token, me, mess } = await sessionCtx();
+  requireAdmin(me);
+  if (amount == null || Number(amount) <= 0)
+    throw new Error('সঠিক টাকার পরিমাণ দাও');
+  const ref = doc(db, 'messes', mess.id, 'advances', advanceId);
+  const snap = await getDoc(ref);
+  if (!snap.exists()) throw new Error('NOT_FOUND');
+  await updateDoc(ref, {
+    amount: Number(amount),
+    note: (note || '').trim() || null,
+    tok: token,
+  });
+}
+
+export async function deleteAdvance(advanceId) {
+  const { db, me, mess } = await sessionCtx();
+  requireAdmin(me);
+  const ref = doc(db, 'messes', mess.id, 'advances', advanceId);
+  const snap = await getDoc(ref);
+  if (!snap.exists()) throw new Error('NOT_FOUND');
+  await deleteDoc(ref);
+}
+
+// বন্ধ মাসের raw রেকর্ড (শুধু অ্যাডমিন) — ভুল ঠিক করার জন্য
+export async function monthRecords(monthId) {
+  const { db, me, mess } = await sessionCtx();
+  requireAdmin(me);
+  const [eSnap, aSnap, uSnap] = await Promise.all([
+    getDocs(query(expensesCol(db, mess.id), where('monthId', '==', monthId))),
+    getDocs(query(advancesCol(db, mess.id), where('monthId', '==', monthId))),
+    getDocs(query(usersCol(db, mess.id), orderBy('createdAt'))),
+  ]);
+  const users = uSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
+  const uname = (id) => (users.find((x) => x.id === id) || {}).displayName || '?';
+  const byTime = (a, b) => b.createdAt.toMillis() - a.createdAt.toMillis();
+  return {
+    expenses: eSnap.docs
+      .map((d) => ({ id: d.id, ...d.data() }))
+      .sort(byTime)
+      .map((e) => ({
+        id: e.id,
+        amount: num(e.amount),
+        category: e.category,
+        note: e.note,
+        by: e.submittedByName || uname(e.submittedBy),
+        status: e.status,
+        at: iso(e.createdAt),
+      })),
+    advances: aSnap.docs
+      .map((d) => ({ id: d.id, ...d.data() }))
+      .sort(byTime)
+      .map((a) => ({
+        id: a.id,
+        amount: num(a.amount),
+        note: a.note,
+        memberId: a.memberId,
+        memberName: uname(a.memberId),
+        at: iso(a.createdAt),
+      })),
+  };
+}
+
 // ---------- monthly close ----------
 
 export async function closeMonth() {
@@ -459,7 +574,9 @@ export async function closeMonth() {
   );
   if (snap.empty) throw new Error('কোনো খোলা মাস নেই');
   const docs = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
-  docs.sort((a, b) => b.year - a.year || b.month - a.month);
+  // সবচেয়ে পুরনো খোলা মাস আগে বন্ধ হবে — নইলে ক্লোজ না করে পরের মাসে
+  // ঢুকে গেলে পুরনো মাসের ডেটা চিরতরে অদৃশ্য হয়ে যেত।
+  docs.sort((a, b) => a.year - b.year || a.month - b.month);
   const cur = docs[0];
 
   let ny = cur.year;
@@ -474,14 +591,18 @@ export async function closeMonth() {
     closedAt: Timestamp.now(),
     tok: token,
   });
-  batch.set(doc(db, 'messes', mess.id, 'months', `${ny}-${nm}`), {
-    year: ny,
-    month: nm,
-    label: bnMonthLabel(ny, nm),
-    status: 'open',
-    closedAt: null,
-    createdAt: Timestamp.now(),
-  });
+  const nextRef = doc(db, 'messes', mess.id, 'months', `${ny}-${nm}`);
+  const nextSnap = await getDoc(nextRef);
+  if (!nextSnap.exists()) {
+    batch.set(nextRef, {
+      year: ny,
+      month: nm,
+      label: bnMonthLabel(ny, nm),
+      status: 'open',
+      closedAt: null,
+      createdAt: Timestamp.now(),
+    });
+  }
   await batch.commit();
   return { closed: cur.label, new_month: bnMonthLabel(ny, nm) };
 }
@@ -521,6 +642,7 @@ export async function dashboard() {
     id: u.id,
     display_name: u.displayName,
     role: u.role,
+    active: u.active !== false,
     paid: expenses
       .filter((e) => e.submittedBy === u.id && e.status === 'approved')
       .reduce((s, e) => s + num(e.amount), 0),
@@ -549,6 +671,22 @@ export async function dashboard() {
       .filter((e) => e.status !== 'pending' && visible(e))
       .slice(0, 30)
       .map((e) => ({ ...expJson(e), status: e.status })),
+    advances: isAdmin
+      ? advances
+          .slice()
+          .sort((a, b) => b.createdAt.toMillis() - a.createdAt.toMillis())
+          .map((a) => {
+            const um = users.find((x) => x.id === a.memberId);
+            return {
+              id: a.id,
+              amount: num(a.amount),
+              note: a.note,
+              memberId: a.memberId,
+              memberName: um ? um.displayName : '?',
+              at: iso(a.createdAt),
+            };
+          })
+      : [],
     totals: {
       approved: expenses
         .filter((e) => e.status === 'approved')
@@ -581,6 +719,7 @@ export async function monthHistory() {
     const expenses = eSnap.docs.map((d) => d.data());
     const advances = aSnap.docs.map((d) => d.data());
     out.push({
+      id: m.id,
       label: m.label,
       closed_at: iso(m.closedAt),
       total_expense: expenses

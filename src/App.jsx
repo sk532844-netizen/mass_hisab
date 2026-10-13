@@ -281,7 +281,7 @@ function BalanceTable({ members }) {
         <tbody>
           {s.rows.map((r) => (
             <tr key={r.id}>
-              <td>{r.display_name}{r.role === 'admin' ? ' 👑' : ''}</td>
+              <td>{r.display_name}{r.role === 'admin' ? ' 👑' : ''}{r.active === false ? ' (নিষ্ক্রিয়)' : ''}</td>
               <td>{api.fmt(r.paid)}</td>
               <td>{api.fmt(r.advance)}</td>
               <td className={r.balance >= 0 ? 'pos' : 'neg'}>
@@ -303,15 +303,17 @@ function BalanceTable({ members }) {
   );
 }
 
-function History({ reloadKey }) {
+function History({ reloadKey, admin }) {
   const [hist, setHist] = useState(null);
+  const [open, setOpen] = useState(null);
+  const [rk, setRk] = useState(0);
   useEffect(() => {
     api.monthHistory().then(setHist).catch(() => setHist([]));
-  }, [reloadKey]);
+  }, [reloadKey, rk]);
   if (hist === null) return <p className="center">লোড হচ্ছে…</p>;
   if (!hist.length) return <p className="center dim">এখনো কোনো মাস ক্লোজ হয়নি।</p>;
   return hist.map((h, i) => (
-    <div className="card" key={i}>
+    <div className="card" key={h.id || i}>
       <h3>{h.label}</h3>
       <p>মোট খরচ: <b>{api.fmt(h.total_expense)}</b> · মোট অ্যাডভান্স: <b>{api.fmt(h.total_advance)}</b></p>
       <table className="tbl">
@@ -322,8 +324,31 @@ function History({ reloadKey }) {
           ))}
         </tbody>
       </table>
+      {admin && (
+        <button className="ghost sm" onClick={() => setOpen(open === h.id ? null : h.id)}>
+          {open === h.id ? '▲ বন্ধ করো' : '▼ রেকর্ড দেখো / ঠিক করো'}
+        </button>
+      )}
+      {admin && open === h.id && (
+        <HistoryDetail monthId={h.id} onChanged={() => setRk((r) => r + 1)} />
+      )}
     </div>
   ));
+}
+
+// বন্ধ মাসের raw রেকর্ড — ভুল ঠিক করার জন্য (শুধু অ্যাডমিন)
+function HistoryDetail({ monthId, onChanged }) {
+  const [rec, setRec] = useState(null);
+  const load = () => api.monthRecords(monthId).then(setRec).catch(() => setRec({ expenses: [], advances: [] }));
+  useEffect(load, [monthId]);
+  if (!rec) return <p className="dim">লোড হচ্ছে…</p>;
+  const done = () => { load(); onChanged && onChanged(); };
+  return (<>
+    <h4>খরচ</h4>
+    <ExpenseList items={rec.expenses} admin onDone={done} />
+    <h4>অ্যাডভান্স</h4>
+    <AdvanceList items={rec.advances} onDone={done} />
+  </>);
 }
 
 function ExpenseForm({ onDone }) {
@@ -359,6 +384,71 @@ function ExpenseForm({ onDone }) {
 
 /* ================= Admin ================= */
 
+function ExpenseEditDialog({ expense, onClose, onDone }) {
+  const [amount, setAmount] = useState(String(expense.amount ?? ''));
+  const [cat, setCat] = useState(expense.category || api.CATEGORIES[0]);
+  const [note, setNote] = useState(expense.note || '');
+  const [msg, setMsg] = useState('');
+  const [busy, setBusy] = useState(false);
+  const go = async (e) => {
+    e.preventDefault(); setMsg(''); setBusy(true);
+    try {
+      await api.updateExpense(expense.id, { amount: Number(amount), category: cat, note });
+      onDone();
+    } catch (e2) { setMsg('ত্রুটি: ' + e2.message); }
+    setBusy(false);
+  };
+  return (
+    <Modal onClose={onClose}>
+      <form onSubmit={go}>
+        <h3>খরচ ঠিক করো</h3>
+        <label>টাকার পরিমাণ<input type="number" min="1" step="any" value={amount}
+          onChange={(e) => setAmount(e.target.value)} required /></label>
+        <label>ক্যাটাগরি
+          <select value={cat} onChange={(e) => setCat(e.target.value)}>
+            {api.CATEGORIES.map((c) => <option key={c}>{c}</option>)}
+          </select></label>
+        <label>নোট<input value={note} onChange={(e) => setNote(e.target.value)} /></label>
+        {msg && <p className="err">{msg}</p>}
+        <div className="btnrow">
+          <button disabled={busy}>{busy ? 'সেভ হচ্ছে…' : 'সেভ করো'}</button>
+          <button type="button" className="ghost" onClick={onClose}>বাতিল</button>
+        </div>
+      </form>
+    </Modal>
+  );
+}
+
+function AdvanceEditDialog({ advance, onClose, onDone }) {
+  const [amount, setAmount] = useState(String(advance.amount ?? ''));
+  const [note, setNote] = useState(advance.note || '');
+  const [msg, setMsg] = useState('');
+  const [busy, setBusy] = useState(false);
+  const go = async (e) => {
+    e.preventDefault(); setMsg(''); setBusy(true);
+    try {
+      await api.updateAdvance(advance.id, { amount: Number(amount), note });
+      onDone();
+    } catch (e2) { setMsg('ত্রুটি: ' + e2.message); }
+    setBusy(false);
+  };
+  return (
+    <Modal onClose={onClose}>
+      <form onSubmit={go}>
+        <h3>অ্যাডভান্স ঠিক করো ({advance.memberName})</h3>
+        <label>টাকার পরিমাণ<input type="number" min="1" step="any" value={amount}
+          onChange={(e) => setAmount(e.target.value)} required /></label>
+        <label>নোট<input value={note} onChange={(e) => setNote(e.target.value)} /></label>
+        {msg && <p className="err">{msg}</p>}
+        <div className="btnrow">
+          <button disabled={busy}>{busy ? 'সেভ হচ্ছে…' : 'সেভ করো'}</button>
+          <button type="button" className="ghost" onClick={onClose}>বাতিল</button>
+        </div>
+      </form>
+    </Modal>
+  );
+}
+
 function AdminApp({ session, onLogout }) {
   const [tab, setTab] = useState('dash');
   const [data, setData] = useState(null);
@@ -392,29 +482,89 @@ function AdminApp({ session, onLogout }) {
           <BalanceTable members={data.members} />
           <ExpenseForm onDone={refresh} />
           <h3>সাম্প্রতিক খরচ</h3>
-          <ExpenseList items={data.recent} />
+          <ExpenseList items={data.recent} admin onDone={refresh} />
         </>}
         {tab === 'pending' && <PendingList items={data.pending} onDone={refresh} />}
-        {tab === 'members' && <MemberManager onDone={refresh} />}
-        {tab === 'adv' && <AdvanceForm members={data.members} onDone={refresh} />}
+        {tab === 'members' && <MemberManager session={session} onDone={refresh} />}
+        {tab === 'adv' && <>
+          <AdvanceForm members={data.members} onDone={refresh} />
+          <h3>এই মাসের অ্যাডভান্স</h3>
+          <AdvanceList items={data.advances} onDone={refresh} />
+        </>}
         {tab === 'month' && <MonthManager month={data.month} onDone={refresh} reloadKey={reload} />}
       </>}
     </div>
   );
 }
 
-function ExpenseList({ items }) {
+function ExpenseList({ items, admin, onDone }) {
+  const [editing, setEditing] = useState(null);
+  const [confirmDel, setConfirmDel] = useState(null);
+  const [err, setErr] = useState('');
   if (!items || !items.length) return <p className="dim">কিছু নেই।</p>;
+  const del = async () => {
+    const e = confirmDel; setConfirmDel(null); setErr('');
+    try { await api.deleteExpense(e.id); onDone && onDone(); }
+    catch (e2) { setErr(e2.message); }
+  };
   return (
     <div className="list">
+      {err && <p className="err">{err}</p>}
       {items.map((e) => (
         <div className="row" key={e.id}>
           <div><b>{api.fmt(e.amount)}</b> · {e.category}<br />
             <small>{e.by}{e.note ? ` — ${e.note}` : ''}</small></div>
-          <span className={`badge ${e.status}`}>{
-            e.status === 'approved' ? 'অনুমোদিত' : e.status === 'rejected' ? 'বাতিল' : 'অপেক্ষমাণ'}</span>
+          <div className="btnrow">
+            <span className={`badge ${e.status}`}>{
+              e.status === 'approved' ? 'অনুমোদিত' : e.status === 'rejected' ? 'বাতিল' : 'অপেক্ষমাণ'}</span>
+            {admin && <>
+              <button className="ghost sm" onClick={() => setEditing(e)}>✏️</button>
+              <button className="ghost sm danger" onClick={() => setConfirmDel(e)}>🗑️</button>
+            </>}
+          </div>
         </div>
       ))}
+      {editing && <ExpenseEditDialog expense={editing}
+        onClose={() => setEditing(null)}
+        onDone={() => { setEditing(null); onDone && onDone(); }} />}
+      {confirmDel && (
+        <ConfirmDialog message={`${api.fmt(confirmDel.amount)} · ${confirmDel.category} — মুছে ফেলবে?`}
+          okLabel="মুছে ফেলো" onOk={del} onCancel={() => setConfirmDel(null)} />
+      )}
+    </div>
+  );
+}
+
+function AdvanceList({ items, onDone }) {
+  const [editing, setEditing] = useState(null);
+  const [confirmDel, setConfirmDel] = useState(null);
+  const [err, setErr] = useState('');
+  if (!items || !items.length) return <p className="dim">এই মাসে কোনো অ্যাডভান্স নেই।</p>;
+  const del = async () => {
+    const a = confirmDel; setConfirmDel(null); setErr('');
+    try { await api.deleteAdvance(a.id); onDone && onDone(); }
+    catch (e2) { setErr(e2.message); }
+  };
+  return (
+    <div className="list">
+      {err && <p className="err">{err}</p>}
+      {items.map((a) => (
+        <div className="row" key={a.id}>
+          <div><b>{api.fmt(a.amount)}</b> · {a.memberName}<br />
+            <small>{a.note || 'নোট নেই'}</small></div>
+          <div className="btnrow">
+            <button className="ghost sm" onClick={() => setEditing(a)}>✏️</button>
+            <button className="ghost sm danger" onClick={() => setConfirmDel(a)}>🗑️</button>
+          </div>
+        </div>
+      ))}
+      {editing && <AdvanceEditDialog advance={editing}
+        onClose={() => setEditing(null)}
+        onDone={() => { setEditing(null); onDone && onDone(); }} />}
+      {confirmDel && (
+        <ConfirmDialog message={`${confirmDel.memberName}-এর ${api.fmt(confirmDel.amount)} অ্যাডভান্স মুছে ফেলবে?`}
+          okLabel="মুছে ফেলো" onOk={del} onCancel={() => setConfirmDel(null)} />
+      )}
     </div>
   );
 }
@@ -422,11 +572,18 @@ function ExpenseList({ items }) {
 function PendingList({ items, onDone }) {
   const [note, setNote] = useState({});
   const [err, setErr] = useState('');
+  const [editing, setEditing] = useState(null);
+  const [confirmDel, setConfirmDel] = useState(null);
   if (!items || !items.length) return <p className="center dim">অনুমোদনের অপেক্ষায় কিছু নেই।</p>;
   const act = async (id, ok) => {
     setErr('');
     try { await api.reviewExpense(id, ok, note[id] || ''); onDone(); }
     catch (e) { setErr(e.message); }
+  };
+  const del = async () => {
+    const e = confirmDel; setConfirmDel(null); setErr('');
+    try { await api.deleteExpense(e.id); onDone(); }
+    catch (e2) { setErr(e2.message); }
   };
   return (
     <div className="list">
@@ -440,19 +597,29 @@ function PendingList({ items, onDone }) {
           <div className="btnrow">
             <button className="ok" onClick={() => act(e.id, true)}>অনুমোদন</button>
             <button className="no" onClick={() => act(e.id, false)}>বাতিল</button>
+            <button className="ghost sm" onClick={() => setEditing(e)}>✏️ ঠিক করো</button>
+            <button className="ghost sm danger" onClick={() => setConfirmDel(e)}>🗑️</button>
           </div>
         </div>
       ))}
+      {editing && <ExpenseEditDialog expense={editing}
+        onClose={() => setEditing(null)}
+        onDone={() => { setEditing(null); onDone(); }} />}
+      {confirmDel && (
+        <ConfirmDialog message={`${api.fmt(confirmDel.amount)} · ${confirmDel.category} — মুছে ফেলবে?`}
+          okLabel="মুছে ফেলো" onOk={del} onCancel={() => setConfirmDel(null)} />
+      )}
     </div>
   );
 }
 
-function MemberManager({ onDone }) {
+function MemberManager({ session, onDone }) {
   const [list, setList] = useState([]);
   const [u, setU] = useState(''); const [p, setP] = useState(''); const [n, setN] = useState('');
   const [msg, setMsg] = useState('');
   const [err, setErr] = useState('');
-  const [confirmRm, setConfirmRm] = useState(null);
+  const [confirmActive, setConfirmActive] = useState(null);
+  const [confirmRole, setConfirmRole] = useState(null);
   const [promptPw, setPromptPw] = useState(null);
   const load = () => api.members().then(setList).catch(() => {});
   useEffect(load, []);
@@ -461,15 +628,33 @@ function MemberManager({ onDone }) {
     try { await api.addMember(u, p, n); setU(''); setP(''); setN(''); load(); onDone(); setMsg('মেম্বার যোগ হয়েছে!'); }
     catch (e2) { setMsg('ত্রুটি: ' + e2.message); }
   };
-  const rm = async () => {
-    const m = confirmRm; setConfirmRm(null); setErr('');
-    try { await api.removeMember(m.id); load(); onDone(); } catch (e2) { setErr(e2.message); }
+  const toggleActive = async () => {
+    const m = confirmActive; setConfirmActive(null); setErr('');
+    try { await api.setMemberActive(m.id, !m.active); load(); onDone(); }
+    catch (e2) { setErr(e2.message); }
+  };
+  const doRole = async () => {
+    const { m, role } = confirmRole; setConfirmRole(null); setErr('');
+    try {
+      const r = await api.setMemberRole(m.id, role);
+      if (r.selfDemoted) {
+        // নিজের পদ ছাড়লে মেম্বার হিসেবে রিলোড
+        const s = JSON.parse(localStorage.getItem('mh_session'));
+        s.user.role = 'member';
+        localStorage.setItem('mh_session', JSON.stringify(s));
+        window.location.reload();
+        return;
+      }
+      load(); onDone();
+      setMsg(role === 'admin' ? `${m.display_name} এখন অ্যাডমিন!` : `${m.display_name} এখন মেম্বার।`);
+    } catch (e2) { setErr(e2.message); }
   };
   const reset = async (np) => {
     const m = promptPw; setPromptPw(null); setErr('');
     try { await api.resetMemberPassword(m.id, np); setMsg('পাসওয়ার্ড বদলে গেছে!'); }
     catch (e2) { setErr(e2.message); }
   };
+  const isSelf = (m) => m.id === session.user.id;
   return (<>
     <form className="card" onSubmit={add}>
       <h3>নতুন মেম্বার</h3>
@@ -483,17 +668,48 @@ function MemberManager({ onDone }) {
     <div className="list">
       {list.map((m) => (
         <div className="row" key={m.id}>
-          <div><b>{m.display_name}</b><br /><small>{m.username} · {m.role === 'admin' ? 'অ্যাডমিন' : 'মেম্বার'}</small></div>
+          <div><b>{m.display_name}</b>
+            {m.role === 'admin' && ' 👑'}
+            {m.active === false && <span className="badge">নিষ্ক্রিয়</span>}
+            {isSelf(m) && <small> (তুমি)</small>}<br />
+            <small>{m.username} · {m.role === 'admin' ? 'অ্যাডমিন' : 'মেম্বার'}</small></div>
           <div className="btnrow">
-            <button className="ghost sm" onClick={() => setPromptPw(m)}>পাসওয়ার্ড</button>
-            <button className="ghost sm danger" onClick={() => setConfirmRm(m)}>বাদ</button>
+            {!isSelf(m) && m.role === 'member' && m.active !== false && (
+              <button className="ghost sm" onClick={() => setConfirmRole({ m, role: 'admin' })}>অ্যাডমিন করো</button>
+            )}
+            {!isSelf(m) && m.role === 'admin' && (
+              <button className="ghost sm" onClick={() => setConfirmRole({ m, role: 'member' })}>মেম্বার করো</button>
+            )}
+            {isSelf(m) && m.role === 'admin' && (
+              <button className="ghost sm" onClick={() => setConfirmRole({ m, role: 'member' })}>পদ ছাড়ো</button>
+            )}
+            {!isSelf(m) && (
+              <>
+                <button className="ghost sm" onClick={() => setPromptPw(m)}>পাসওয়ার্ড</button>
+                {m.active === false
+                  ? <button className="ghost sm" onClick={() => setConfirmActive(m)}>সক্রিয় করো</button>
+                  : <button className="ghost sm danger" onClick={() => setConfirmActive(m)}>নিষ্ক্রিয়</button>}
+              </>
+            )}
           </div>
         </div>
       ))}
     </div>
-    {confirmRm && (
-      <ConfirmDialog message={`${confirmRm.display_name}-কে বাদ দেবে?`}
-        okLabel="বাদ দাও" onOk={rm} onCancel={() => setConfirmRm(null)} />
+    {confirmActive && (
+      <ConfirmDialog message={confirmActive.active === false
+        ? `${confirmActive.display_name}-কে আবার সক্রিয় করবে?`
+        : `${confirmActive.display_name}-কে নিষ্ক্রিয় করবে? লগইন বন্ধ হয়ে যাবে, কিন্তু পুরনো হিসাব অটুট থাকবে।`}
+        okLabel={confirmActive.active === false ? 'সক্রিয় করো' : 'নিষ্ক্রিয় করো'}
+        onOk={toggleActive} onCancel={() => setConfirmActive(null)} />
+    )}
+    {confirmRole && (
+      <ConfirmDialog message={confirmRole.role === 'admin'
+        ? `${confirmRole.m.display_name}-কে অ্যাডমিন বানাবে?`
+        : isSelf(confirmRole.m)
+          ? 'তুমি অ্যাডমিন পদ ছাড়বে? এরপর তুমি মেম্বার হিসেবে থাকবে।'
+          : `${confirmRole.m.display_name} আর অ্যাডমিন থাকবে না, মেম্বার হয়ে যাবে।`}
+        okLabel={confirmRole.role === 'admin' ? 'অ্যাডমিন বানাও' : 'মেম্বার করো'}
+        onOk={doRole} onCancel={() => setConfirmRole(null)} />
     )}
     {promptPw && (
       <PromptDialog message={`${promptPw.display_name}-এর নতুন পাসওয়ার্ড দাও:`}
@@ -504,7 +720,8 @@ function MemberManager({ onDone }) {
 }
 
 function AdvanceForm({ members, onDone }) {
-  const [mid, setMid] = useState(members[0]?.id || '');
+  const actives = (members || []).filter((m) => m.active !== false);
+  const [mid, setMid] = useState(actives[0]?.id || '');
   const [amount, setAmount] = useState('');
   const [note, setNote] = useState('');
   const [msg, setMsg] = useState('');
@@ -520,7 +737,7 @@ function AdvanceForm({ members, onDone }) {
       <h3>অ্যাডভান্স নাও</h3>
       <label>মেম্বার
         <select value={mid} onChange={(e) => setMid(e.target.value)}>
-          {members.map((m) => <option key={m.id} value={m.id}>{m.display_name}</option>)}
+          {actives.map((m) => <option key={m.id} value={m.id}>{m.display_name}</option>)}
         </select></label>
       <label>টাকার পরিমাণ<input type="number" min="1" step="any" value={amount}
         onChange={(e) => setAmount(e.target.value)} required placeholder="যেমন: ২০০০" /></label>
@@ -564,7 +781,7 @@ function MonthManager({ month, onDone, reloadKey }) {
       {rcode && <p className="bigcode">{rcode}</p>}
     </div>
     <h3>পুরনো মাসের হিসাব</h3>
-    <History reloadKey={reloadKey} />
+    <History reloadKey={reloadKey} admin />
     {confirmClose && (
       <ConfirmDialog message={`${month.label} ক্লোজ করবে? এরপর নতুন মাস শুরু হবে।`}
         okLabel="ক্লোজ করো" onOk={close} onCancel={() => setConfirmClose(false)} />
