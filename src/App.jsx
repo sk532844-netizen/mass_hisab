@@ -35,10 +35,16 @@ export default function App() {
   };
 
   if (checking) return <div className="wrap"><p className="center">লোড হচ্ছে…</p></div>;
-  if (!session) return <AuthScreen onDone={done} />;
-  return session.user.role === 'admin'
+  if (!session) return <><SetupNotice /><AuthScreen onDone={done} /></>;
+  return <><SetupNotice />{session.user.role === 'admin'
     ? <AdminApp session={session} onLogout={out} />
-    : <MemberApp session={session} onLogout={out} />;
+    : <MemberApp session={session} onLogout={out} />}</>;
+}
+
+// Firebase config না থাকলে বন্ধুত্বপূর্ণ নোটিশ — app crash করবে না।
+function SetupNotice() {
+  if (api.isConfigured()) return null;
+  return <p className="notice">⚠️ Firebase সেটআপ বাকি আছে — FIREBASE_SETUP.md দেখে কনফিগ যোগ করো।</p>;
 }
 
 /* ================= Auth ================= */
@@ -494,5 +500,4 @@ function MemberApp({ session, onLogout }) {
       </>}
     </div>
   );
-
-        }
+}

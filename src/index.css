@@ -130,6 +130,11 @@ button.danger-btn { background: linear-gradient(135deg, #e0655f, var(--danger));
 }
 
 .err { color: var(--danger); margin-top: 10px; font-weight: 600; }
+.notice {
+  background: #fff7e6; border: 1px solid var(--gold); color: #8a5a00;
+  border-radius: 12px; padding: 10px 14px; margin: 12px auto 0;
+  max-width: 660px; font-weight: 600;
+}
 .msg { color: var(--p1); margin-top: 10px; font-weight: 600; }
 .hint { color: var(--muted); font-size: .88rem; margin-top: 10px; }
 .hint a { color: var(--p1); font-weight: 600; }
