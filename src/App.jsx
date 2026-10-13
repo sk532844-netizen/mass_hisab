@@ -340,7 +340,7 @@ function History({ reloadKey, admin }) {
 function HistoryDetail({ monthId, onChanged }) {
   const [rec, setRec] = useState(null);
   const load = () => api.monthRecords(monthId).then(setRec).catch(() => setRec({ expenses: [], advances: [] }));
-  useEffect(load, [monthId]);
+  useEffect(() => { load(); }, [monthId]);
   if (!rec) return <p className="dim">লোড হচ্ছে…</p>;
   const done = () => { load(); onChanged && onChanged(); };
   return (<>
@@ -622,7 +622,7 @@ function MemberManager({ session, onDone }) {
   const [confirmRole, setConfirmRole] = useState(null);
   const [promptPw, setPromptPw] = useState(null);
   const load = () => api.members().then(setList).catch(() => {});
-  useEffect(load, []);
+  useEffect(() => { load(); }, []);
   const add = async (e) => {
     e.preventDefault(); setMsg(''); setErr('');
     try { await api.addMember(u, p, n); setU(''); setP(''); setN(''); load(); onDone(); setMsg('মেম্বার যোগ হয়েছে!'); }
