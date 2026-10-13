@@ -1,0 +1,137 @@
+// ============================================================
+// মেস হিসাব — Firestore security rules (best-effort)
+//
+// সৎ সীমাবদ্ধতা (পড়ো):
+// 1. এই app-এ Firebase Auth নেই — custom join-code auth ব্যবহার হয়।
+//    Firestore rules কলার-এর পরিচয় দেখতে পায় না, তাই READ-এর উপর
+//    per-user চেক বসানো অসম্ভব। messId/joinCode/token গুলো অনুমান-অযোগ্য
+//    random string — এটাই read isolation-এর ভরসা।
+// 2. WRITE-এ client প্রতিটি write-এ নিজের session token `tok` ফিল্ডে
+//    পাঠায়; rules get() দিয়ে sessions/{tok} দেখে messId মিলিয়ে নেয়।
+//    `tok` ডকুমেন্টে সংরক্ষিত থাকে — মেসের পাঠকরা এটা দেখতে পাবে
+//    (friends-and-family app-এর জন্য গ্রহণযোগ্য)।
+// 3. delete/signup/recovery-flow-তে token যাচাই সম্ভব নয় (বিস্তারিত নিচে)
+//    — এগুলো structural check দিয়ে সীমাবদ্ধ।
+// আরও শক্ত নিরাপত্তা চাইলে Firebase Auth + Cloud Functions লাগবে
+// (Blaze plan দরকার)।
+// ============================================================
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function sessionExists(tok) {
+      return tok is string && tok.size() > 0
+        && exists(/databases/$(database)/documents/sessions/$(tok));
+    }
+
+    // session token -> এই mess-এর, মেয়াদোত্তীর্ণ নয়
+    function tokenOk(tok, messId) {
+      return sessionExists(tok)
+        && get(/databases/$(database)/documents/sessions/$(tok)).data.messId == messId
+        && get(/databases/$(database)/documents/sessions/$(tok)).data.expiresAt > request.time;
+    }
+
+    // ---------- join codes: login-এর জন্য পড়া লাগে ----------
+    match /joinCodes/{code} {
+      allow get: if true; // join code মেসের শেয়ার্ড সিক্রেট
+      allow list: if false;
+      // atomic claim: শুধু খালি কোড দাবি করা যাবে (signup transaction)
+      allow create: if !exists(/databases/$(database)/documents/joinCodes/$(code))
+                    && request.resource.data.messId is string;
+      allow update, delete: if false;
+    }
+
+    // ---------- sessions: token-ই credential ----------
+    match /sessions/{token} {
+      allow get: if true; // random UUID, অনুমান করা যায় না
+      allow list: if false;
+      allow create: if request.resource.data.keys().hasAll(['messId', 'userId', 'createdAt', 'expiresAt'])
+                    && request.resource.data.messId is string
+                    && request.resource.data.userId is string;
+      allow update: if false;
+      allow delete: if true; // logout / password-reset — token জানাই প্রমাণ
+    }
+
+    // ---------- messes ----------
+    match /messes/{messId} {
+      // সীমাবদ্ধতা: read-এ caller যাচাই অসম্ভব (নোট 1)।
+      allow read: if true;
+      allow create: if request.resource.data.name is string
+                    && request.resource.data.name.size() >= 2
+                    && request.resource.data.joinCode is string;
+      allow update, delete: if false; // app কখনো mess doc বদলায় না
+
+      // ---------- users ----------
+      match /users/{userId} {
+        // সীমাবদ্ধতা: login-এ password hash মেলাতে user doc পড়তেই হয়।
+        allow read: if true;
+        // signup (token ছাড়া) + addMember (token সহ) — structural check।
+        allow create: if request.resource.data.username is string
+                      && request.resource.data.username.size() >= 3
+                      && request.resource.data.passwordHash is string
+                      && request.resource.data.displayName is string
+                      && request.resource.data.role in ['admin', 'member'];
+        // সাধারণ update-এ token লাগে; recovery-flow (passwordHash-only
+        // change) token ছাড়া — সীমাবদ্ধতা: recovery code যাচাই client-এ।
+        allow update: if tokenOk(request.resource.data.tok, messId)
+                      || request.resource.data.diff(resource.data).changedKeys().hasOnly(['passwordHash']);
+        // সীমাবদ্ধতা: delete-এ caller token যাচাই অসম্ভব (old doc-এর tok
+        // stale হতে পারে)। removeMember client-এ admin-check করে।
+        allow delete: if true;
+      }
+
+      // ---------- months ----------
+      match /months/{monthId} {
+        allow read: if true;
+        // signup / closePeriod-এ নতুন পিরিয়ড তৈরি হয় — flexible period:
+        // year/month বাধ্যতামূলক নয় (startDate থাকে), status string হলেই চলবে।
+        allow create: if request.resource.data.status in ['open', 'closed'];
+        allow update: if tokenOk(request.resource.data.tok, messId); // closePeriod / setPeriodNote
+        allow delete: if true; // app কখনো ডাকে না; সীমাবদ্ধতা নোট 3
+      }
+
+      // ---------- expenses ----------
+      match /expenses/{expenseId} {
+        allow read: if true; // সীমাবদ্ধতা নোট 1
+        allow create: if tokenOk(request.resource.data.tok, messId)
+                      && request.resource.data.amount is number
+                      && request.resource.data.amount > 0
+                      && request.resource.data.status in ['pending', 'approved', 'rejected']
+                      && request.resource.data.submittedBy is string
+                      && request.resource.data.monthId is string;
+        allow update: if tokenOk(request.resource.data.tok, messId)
+                      && request.resource.data.amount is number
+                      && request.resource.data.amount > 0
+                      && request.resource.data.status in ['pending', 'approved', 'rejected'];
+        allow delete: if true; // removeMember cascade; সীমাবদ্ধতা নোট 3
+      }
+
+      // ---------- advances ----------
+      match /advances/{advanceId} {
+        allow read: if true; // সীমাবদ্ধতা নোট 1
+        allow create: if tokenOk(request.resource.data.tok, messId)
+                      && request.resource.data.amount is number
+                      && request.resource.data.amount > 0
+                      && request.resource.data.memberId is string
+                      && request.resource.data.monthId is string;
+        allow update: if tokenOk(request.resource.data.tok, messId)
+                      && request.resource.data.amount is number
+                      && request.resource.data.amount > 0;
+        allow delete: if true; // removeMember cascade; সীমাবদ্ধতা নোট 3
+      }
+      // ---------- payments ----------
+      // ফান্ডে জমা ('in') / ফান্ড থেকে পরিশোধ ('out') — admin-only (client check)।
+      match /payments/{paymentId} {
+        allow read: if true; // সীমাবদ্ধতা নোট 1
+        allow create: if tokenOk(request.resource.data.tok, messId)
+                      && request.resource.data.amount is number
+                      && request.resource.data.amount > 0
+                      && request.resource.data.kind in ['in', 'out']
+                      && request.resource.data.memberId is string
+                      && request.resource.data.monthId is string;
+        allow update: if tokenOk(request.resource.data.tok, messId);
+        allow delete: if true; // deletePayment client-এ admin-check করে
+      }
+    }
+  }
+}
