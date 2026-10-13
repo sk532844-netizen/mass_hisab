@@ -907,9 +907,12 @@ export async function dashboard() {
     month: {
       id: month.id,
       status: month.status,
+      year: month.year || null,
+      month: month.month || null,
       startDate: iso(month.startDate) || null,
       endDate: iso(month.endDate) || null,
       closedAt: iso(month.closedAt),
+      createdAt: iso(month.createdAt),
       note: month.note || null,
     },
     role: me.role,
@@ -982,8 +985,11 @@ export async function monthHistory() {
     out.push({
       id: m.id,
       status: m.status,
+      year: m.year || null,
+      month: m.month || null,
       startDate: iso(m.startDate) || null,
       endDate: iso(m.endDate) || null,
+      createdAt: iso(m.createdAt),
       note: m.note || null,
       closed_at: iso(m.closedAt),
       total_expense: expenses
