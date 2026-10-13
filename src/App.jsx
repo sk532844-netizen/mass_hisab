@@ -47,6 +47,49 @@ function SetupNotice() {
   return <p className="notice">⚠️ Firebase সেটআপ বাকি আছে — FIREBASE_SETUP.md দেখে কনফিগ যোগ করো।</p>;
 }
 
+/* ================= Dialogs =================
+   Native confirm()/alert()/prompt()-এর বদলে in-app dialog —
+   native dialog কিছু browser/automation-এ page hang করে দিতে পারে। */
+
+function Modal({ children, onClose }) {
+  return (
+    <div className="overlay" onClick={onClose}>
+      <div className="dialog" onClick={(e) => e.stopPropagation()}>
+        {children}
+      </div>
+    </div>
+  );
+}
+
+function ConfirmDialog({ message, okLabel = 'হ্যাঁ', onOk, onCancel }) {
+  return (
+    <Modal onClose={onCancel}>
+      <p className="dlgmsg">{message}</p>
+      <div className="btnrow">
+        <button className="no" onClick={onOk}>{okLabel}</button>
+        <button className="ghost" onClick={onCancel}>বাতিল</button>
+      </div>
+    </Modal>
+  );
+}
+
+function PromptDialog({ message, placeholder, okLabel = 'ঠিক আছে', onOk, onCancel }) {
+  const [val, setVal] = useState('');
+  const go = () => { if (val) onOk(val); };
+  return (
+    <Modal onClose={onCancel}>
+      <p className="dlgmsg">{message}</p>
+      <input type="password" value={val} onChange={(e) => setVal(e.target.value)}
+        placeholder={placeholder} autoFocus
+        onKeyDown={(e) => { if (e.key === 'Enter') go(); }} />
+      <div className="btnrow">
+        <button onClick={go}>{okLabel}</button>
+        <button className="ghost" onClick={onCancel}>বাতিল</button>
+      </div>
+    </Modal>
+  );
+}
+
 /* ================= Auth ================= */
 
 function AuthScreen({ onDone }) {
@@ -339,13 +382,16 @@ function ExpenseList({ items }) {
 
 function PendingList({ items, onDone }) {
   const [note, setNote] = useState({});
+  const [err, setErr] = useState('');
   if (!items || !items.length) return <p className="center dim">অনুমোদনের অপেক্ষায় কিছু নেই।</p>;
   const act = async (id, ok) => {
+    setErr('');
     try { await api.reviewExpense(id, ok, note[id] || ''); onDone(); }
-    catch (e) { alert(e.message); }
+    catch (e) { setErr(e.message); }
   };
   return (
     <div className="list">
+      {err && <p className="err">{err}</p>}
       {items.map((e) => (
         <div className="card" key={e.id}>
           <p><b>{api.fmt(e.amount)}</b> · {e.category} — {e.by}<br />
@@ -366,22 +412,24 @@ function MemberManager({ onDone }) {
   const [list, setList] = useState([]);
   const [u, setU] = useState(''); const [p, setP] = useState(''); const [n, setN] = useState('');
   const [msg, setMsg] = useState('');
+  const [err, setErr] = useState('');
+  const [confirmRm, setConfirmRm] = useState(null);
+  const [promptPw, setPromptPw] = useState(null);
   const load = () => api.members().then(setList).catch(() => {});
   useEffect(load, []);
   const add = async (e) => {
-    e.preventDefault(); setMsg('');
+    e.preventDefault(); setMsg(''); setErr('');
     try { await api.addMember(u, p, n); setU(''); setP(''); setN(''); load(); onDone(); setMsg('মেম্বার যোগ হয়েছে!'); }
     catch (e2) { setMsg('ত্রুটি: ' + e2.message); }
   };
-  const rm = async (id, name) => {
-    if (!confirm(`${name}-কে বাদ দেবে?`)) return;
-    try { await api.removeMember(id); load(); onDone(); } catch (e2) { alert(e2.message); }
+  const rm = async () => {
+    const m = confirmRm; setConfirmRm(null); setErr('');
+    try { await api.removeMember(m.id); load(); onDone(); } catch (e2) { setErr(e2.message); }
   };
-  const reset = async (id, name) => {
-    const np = prompt(`${name}-এর নতুন পাসওয়ার্ড দাও:`);
-    if (!np) return;
-    try { await api.resetMemberPassword(id, np); alert('পাসওয়ার্ড বদলে গেছে!'); }
-    catch (e2) { alert(e2.message); }
+  const reset = async (np) => {
+    const m = promptPw; setPromptPw(null); setErr('');
+    try { await api.resetMemberPassword(m.id, np); setMsg('পাসওয়ার্ড বদলে গেছে!'); }
+    catch (e2) { setErr(e2.message); }
   };
   return (<>
     <form className="card" onSubmit={add}>
@@ -391,18 +439,28 @@ function MemberManager({ onDone }) {
       <label>পাসওয়ার্ড<input value={p} onChange={(e) => setP(e.target.value)} required placeholder="মেম্বারকে জানিয়ে দাও" /></label>
       <button>যোগ করো</button>
       {msg && <p className="msg">{msg}</p>}
+      {err && <p className="err">{err}</p>}
     </form>
     <div className="list">
       {list.map((m) => (
         <div className="row" key={m.id}>
           <div><b>{m.display_name}</b><br /><small>{m.username} · {m.role === 'admin' ? 'অ্যাডমিন' : 'মেম্বার'}</small></div>
           <div className="btnrow">
-            <button className="ghost sm" onClick={() => reset(m.id, m.display_name)}>পাসওয়ার্ড</button>
-            <button className="ghost sm danger" onClick={() => rm(m.id, m.display_name)}>বাদ</button>
+            <button className="ghost sm" onClick={() => setPromptPw(m)}>পাসওয়ার্ড</button>
+            <button className="ghost sm danger" onClick={() => setConfirmRm(m)}>বাদ</button>
           </div>
         </div>
       ))}
     </div>
+    {confirmRm && (
+      <ConfirmDialog message={`${confirmRm.display_name}-কে বাদ দেবে?`}
+        okLabel="বাদ দাও" onOk={rm} onCancel={() => setConfirmRm(null)} />
+    )}
+    {promptPw && (
+      <PromptDialog message={`${promptPw.display_name}-এর নতুন পাসওয়ার্ড দাও:`}
+        placeholder="নতুন পাসওয়ার্ড" okLabel="বদলে দাও"
+        onOk={reset} onCancel={() => setPromptPw(null)} />
+    )}
   </>);
 }
 
@@ -438,8 +496,10 @@ function AdvanceForm({ members, onDone }) {
 function MonthManager({ month, onDone, reloadKey }) {
   const [msg, setMsg] = useState('');
   const [rcode, setRcode] = useState('');
+  const [confirmClose, setConfirmClose] = useState(false);
+  const [confirmCode, setConfirmCode] = useState(false);
   const close = async () => {
-    if (!confirm(`${month.label} ক্লোজ করবে? এরপর নতুন মাস শুরু হবে।`)) return;
+    setConfirmClose(false);
     try {
       const r = await api.closeMonth();
       setMsg(`${r.closed} ক্লোজ হয়েছে। নতুন মাস: ${r.new_month}`);
@@ -447,7 +507,7 @@ function MonthManager({ month, onDone, reloadKey }) {
     } catch (e) { setMsg('ত্রুটি: ' + e.message); }
   };
   const newCode = async () => {
-    if (!confirm('নতুন রিকভারি কোড বানাবে? পুরনো কোড বাতিল হয়ে যাবে।')) return;
+    setConfirmCode(false);
     try { setRcode(await api.getRecoveryCode()); }
     catch (e) { setMsg('ত্রুটি: ' + e.message); }
   };
@@ -455,17 +515,25 @@ function MonthManager({ month, onDone, reloadKey }) {
     <div className="card">
       <h3>চলতি মাস: {month.label}</h3>
       <p className="dim">শুধু অ্যাডমিন মাস ক্লোজ করতে পারে। ক্লোজ হলে নতুন মাসের হিসাব শুরু হবে।</p>
-      <button className="danger-btn" onClick={close}>মাস ক্লোজ করো</button>
+      <button className="danger-btn" onClick={() => setConfirmClose(true)}>মাস ক্লোজ করো</button>
       {msg && <p className="msg">{msg}</p>}
     </div>
     <div className="card">
       <h3>রিকভারি কোড</h3>
       <p className="dim">কোড হারিয়ে গেলে এখান থেকে নতুন বানাতে পারবে।</p>
-      <button className="ghost" onClick={newCode}>নতুন রিকভারি কোড বানাও</button>
+      <button className="ghost" onClick={() => setConfirmCode(true)}>নতুন রিকভারি কোড বানাও</button>
       {rcode && <p className="bigcode">{rcode}</p>}
     </div>
     <h3>পুরনো মাসের হিসাব</h3>
     <History reloadKey={reloadKey} />
+    {confirmClose && (
+      <ConfirmDialog message={`${month.label} ক্লোজ করবে? এরপর নতুন মাস শুরু হবে।`}
+        okLabel="ক্লোজ করো" onOk={close} onCancel={() => setConfirmClose(false)} />
+    )}
+    {confirmCode && (
+      <ConfirmDialog message="নতুন রিকভারি কোড বানাবে? পুরনো কোড বাতিল হয়ে যাবে।"
+        onOk={newCode} onCancel={() => setConfirmCode(false)} />
+    )}
   </>);
 }
 
