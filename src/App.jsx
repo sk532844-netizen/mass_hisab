@@ -82,6 +82,12 @@ const loadSession = () => {
 export default function App() {
   const [session, setSession] = useState(loadSession);
   const [checking, setChecking] = useState(!!loadSession());
+  const [splash, setSplash] = useState(true);
+
+  useEffect(() => {
+    const t = setTimeout(() => setSplash(false), 2200);
+    return () => clearTimeout(t);
+  }, []);
 
   useEffect(() => {
     if (!session) return;
@@ -109,6 +115,7 @@ export default function App() {
 
   return (
     <LangProvider>
+      {splash && <SplashScreen />}
       <SetupNotice />
       {checking ? (
         <div className="wrap"><p className="center"><CheckingText /></p></div>
@@ -128,6 +135,24 @@ export default function App() {
 function CheckingText() {
   const { t } = useLang();
   return <>{t('loading')}</>;
+}
+
+// Splash screen — app open-এর সময় লোগো animation (২.২ সেকেন্ড)
+function SplashScreen() {
+  return (
+    <div className="splash">
+      <div className="splash-logo-wrap">
+        <div className="splash-ring"></div>
+        <img className="splash-logo" src="./logo.png" alt="MassBook" />
+        <span className="splash-coin c1">🪙</span>
+        <span className="splash-coin c2">✨</span>
+        <span className="splash-coin c3">🪙</span>
+      </div>
+      <div className="splash-name">MassBook</div>
+      <div className="splash-tag">মেসের হিসাব, সহজে</div>
+      <div className="splash-dots"><span></span><span></span><span></span></div>
+    </div>
+  );
 }
 
 // কোনো render error হলে সাদা blank পেজের বদলে কারণ + রিফ্রেশ বাটন দেখাবে।
