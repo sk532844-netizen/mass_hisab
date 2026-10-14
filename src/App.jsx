@@ -397,13 +397,14 @@ function BalanceTable({ members, payments }) {
         <div className="stat"><span>{t('perHead')}</span><b>{fmt(fs.share)}</b></div>
       </div>
       <table className="tbl">
-        <thead><tr><th>{t('thName')}</th><th>{t('thPaid')}</th><th>{t('thAdvance')}</th><th>{t('thBalance')}</th></tr></thead>
+        <thead><tr><th>{t('thName')}</th><th>{t('thPaid')}</th><th>{t('thAdvance')}</th><th>{t('thTotalDep')}</th><th>{t('thBalance')}</th></tr></thead>
         <tbody>
           {fs.rows.map((r, i) => (
             <tr key={r.id || i}>
               <td>{r.display_name}{r.role === 'admin' ? ' 👑' : ''}{r.active === false ? t('inactiveSuffix') : ''}</td>
               <td>{fmt(r.paidOwn != null ? r.paidOwn : r.paid)}</td>
               <td>{fmt(r.advance)}</td>
+              <td><b>{fmt(r.contributed)}</b></td>
               <td className={cellClass(r)}>
                 {balCell(r)}
               </td>
