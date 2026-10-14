@@ -371,11 +371,24 @@ function BalanceTable({ members, payments }) {
   const { t, fmt } = useLang();
   const fs = api.fundSettlement(members || [], payments || []);
   const balCell = (r) => {
-    const gross = r.balance || 0;
-    const net = r.netBalance != null ? r.netBalance : gross;
-    if (Math.abs(gross) < 0.5) return <span className="dim">—</span>;
-    if (Math.abs(net) < 0.5) return <span className="pos">{t('paidDone')}</span>;
-    return net >= 0 ? `${t('willGet')} ${fmt(net)}` : `${t('willGive')} ${fmt(-net)}`;
+    const d = (fs.debtors || []).find((x) => x.id === r.id);
+    if (d) {
+      if (d.remaining < 0.5) return <span className="pos">{t('paidDone')}</span>;
+      return `${t('willGive')} ${fmt(d.remaining)}`;
+    }
+    const c = (fs.creditors || []).find((x) => x.id === r.id);
+    if (c) {
+      if (c.remaining < 0.5) return <span className="pos">{t('paidDone')}</span>;
+      return `${t('willGet')} ${fmt(c.remaining)}`;
+    }
+    return <span className="dim">—</span>;
+  };
+  const cellClass = (r) => {
+    const d = (fs.debtors || []).find((x) => x.id === r.id);
+    if (d) return d.remaining < 0.5 ? 'pos' : 'neg';
+    const c = (fs.creditors || []).find((x) => x.id === r.id);
+    if (c) return 'pos';
+    return '';
   };
   return (
     <>
@@ -389,9 +402,9 @@ function BalanceTable({ members, payments }) {
           {fs.rows.map((r, i) => (
             <tr key={r.id || i}>
               <td>{r.display_name}{r.role === 'admin' ? ' 👑' : ''}{r.active === false ? t('inactiveSuffix') : ''}</td>
-              <td>{fmt(r.paid)}</td>
+              <td>{fmt(r.paidOwn != null ? r.paidOwn : r.paid)}</td>
               <td>{fmt(r.advance)}</td>
-              <td className={(r.netBalance != null ? r.netBalance : r.balance) >= 0 ? 'pos' : 'neg'}>
+              <td className={cellClass(r)}>
                 {balCell(r)}
               </td>
             </tr>
@@ -408,12 +421,17 @@ function buildCopy(monthLabel, fs, t, fmt, lang, expenses, payments, members) {
   lines.push(`${t('copyL1')} ${fmt(fs.total)} | ${t('copyL2')} ${fmt(fs.share)} | ${t('copyL3')} ${fmt(fs.fundTotal)}`);
   lines.push('');
   for (const r of fs.rows) {
-    const net = r.netBalance != null ? r.netBalance : r.balance;
-    const gross = r.balance || 0;
+    // মিটমাটের সাথে মিলিয়ে — remaining দেখাও, net নয়
+    const d = (fs.debtors || []).find((x) => x.id === r.id);
+    const c = (fs.creditors || []).find((x) => x.id === r.id);
     let st;
-    if (Math.abs(gross) < 0.5) st = fmt(0);
-    else if (Math.abs(net) < 0.5) st = t('paidDone');
-    else st = `${net >= 0 ? t('willGet') : t('willGive')} ${fmt(Math.abs(net))}`;
+    if (d) {
+      st = d.remaining < 0.5 ? t('paidDone') : `${t('willGive')} ${fmt(d.remaining)}`;
+    } else if (c) {
+      st = c.remaining < 0.5 ? t('paidDone') : `${t('willGet')} ${fmt(c.remaining)}`;
+    } else {
+      st = fmt(0);
+    }
     lines.push(`${r.display_name} — ${st}`);
   }
   // খরচের detail: কে, কবে, কী বাবদ, কত, উৎস
@@ -487,7 +505,7 @@ function SettlementSection({ members, payments, expenses, monthId, monthLabel, a
   return (
     <div className="card">
       <h3>💰 {t('copySettlement').replace('💰 ', '')}</h3>
-      <p className="dim">{t('fundTotal')} <b>{fmt(fs.fundTotal)}</b></p>
+      <p className="dim">{t('fundTotal')} <b>{fmt(fs.fundTotal)}</b>{fs.fundSpent > 0.5 && <> · {t('fundSpent')}: <b>{fmt(fs.fundSpent)}</b> · {t('fundBalance')}: <b>{fmt(fs.fundBalance)}</b></>}</p>
       {(fs.dueIn > 0.5 || fs.dueOut > 0.5) && (
         <p className="dim">{t('totalDue')}: <b>{t('dueCollect')} {fmt(fs.dueIn)} · {t('duePayout')} {fmt(fs.dueOut)}</b></p>
       )}
