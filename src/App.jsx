@@ -229,6 +229,7 @@ function AuthScreen({ onDone }) {
       </div>
       {tab === 'login' ? <LoginForm onDone={onDone} /> : <SignupForm onDone={onDone} />}
       <p className="foot">{t('onlineSafe')}</p>
+      <p className="center dim" style={{ fontSize: '.82rem', marginTop: 4 }}>{t('aboutDev')}</p>
       <p className="center"><LangToggle /></p>
     </div>
   );
