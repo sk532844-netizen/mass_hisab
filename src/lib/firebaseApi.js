@@ -259,6 +259,17 @@ function paymentsCol(db, messId) {
   return collection(db, 'messes', messId, 'payments');
 }
 
+// চলতি পিরিয়ডের ফান্ড ব্যালেন্স = মোট অ্যাডভান্স − ফান্ড থেকে approved খরচ
+async function currentFundBalance(db, messId, monthId) {
+  const [aSnap, eSnap] = await Promise.all([
+    getDocs(query(advancesCol(db, messId), where('monthId', '==', monthId))),
+    getDocs(query(expensesCol(db, messId), where('monthId', '==', monthId), where('status', '==', 'approved'), where('source', '==', 'fund'))),
+  ]);
+  const totalAdv = aSnap.docs.reduce((s, d) => s + num(d.data().amount), 0);
+  const fundSpent = eSnap.docs.reduce((s, d) => s + num(d.data().amount), 0);
+  return totalAdv - fundSpent;
+}
+
 // খোলা পিরিয়ড — না থাকলে এখন থেকে শুরু করে বানায়।
 async function ensureOpenPeriod(db, messId, tok) {
   const snap = await getDocs(
@@ -532,6 +543,13 @@ export async function submitExpense(amount, category, note, opts = {}) {
   const source = opts.source === 'fund' ? 'fund' : 'own';
   const expenseDate = validDateStr(opts.expenseDate) || todayStr();
   const month = await ensureOpenMonth(db, mess.id, token);
+  // ফান্ডের খরচ: ফান্ডে যত টাকা আছে ততটুকুই খরচ করা যাবে
+  if (source === 'fund') {
+    const bal = await currentFundBalance(db, mess.id, month.id);
+    if (Number(amount) > bal + 0.5) {
+      throw new Error(`ফান্ডে ${Math.round(bal)} টাকা আছে — এর বেশি ফান্ড থেকে খরচ করা যাবে না`);
+    }
+  }
   const ref = await addDoc(expensesCol(db, mess.id), {
     monthId: month.id,
     submittedBy: me.id,
@@ -556,6 +574,13 @@ export async function reviewExpense(expenseId, approve, note) {
   const ref = doc(db, 'messes', mess.id, 'expenses', expenseId);
   const snap = await getDoc(ref);
   if (!snap.exists() || snap.data().status !== 'pending') return;
+  // Approve-এর সময়ও ফান্ড চেক — submit-এর পর ফান্ড কমে গিয়ে থাকতে পারে
+  if (approve && snap.data().source === 'fund') {
+    const bal = await currentFundBalance(db, mess.id, snap.data().monthId);
+    if (Number(snap.data().amount) > bal + 0.5) {
+      throw new Error(`ফান্ডে ${Math.round(bal)} টাকা আছে — এই খরচ approve করা যাবে না`);
+    }
+  }
   await updateDoc(ref, {
     status: approve ? 'approved' : 'rejected',
     reviewedBy: me.id,
@@ -839,6 +864,13 @@ export async function submitSplitExpense({ amount, category, note, splits, sourc
   const src = source === 'fund' ? 'fund' : 'own';
   const expDate = validDateStr(expenseDate) || todayStr();
   const month = await ensureOpenPeriod(db, mess.id, token);
+  // ফান্ডের split খরচ: ফান্ডে যত টাকা আছে ততটুকুই
+  if (src === 'fund') {
+    const bal = await currentFundBalance(db, mess.id, month.id);
+    if (splitTotal > bal + 0.5) {
+      throw new Error(`ফান্ডে ${Math.round(bal)} টাকা আছে — এর বেশি ফান্ড থেকে খরচ করা যাবে না`);
+    }
+  }
   const uSnap = await getDocs(query(usersCol(db, mess.id), orderBy('createdAt')));
   const users = uSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
   const groupId = newId();
@@ -884,6 +916,10 @@ export async function closePeriod() {
 
   const now = Timestamp.now();
   const startMs = periodStartMs(cur);
+  // নতুন পিরিয়ড পরের দিনের শুরু থেকে (device/internet-এর আসল তারিখ অনুযায়ী)
+  const closeDate = new Date(now.toMillis());
+  const nextDay = new Date(closeDate.getFullYear(), closeDate.getMonth(), closeDate.getDate() + 1);
+  const nextDayTs = Timestamp.fromDate(nextDay);
   const batch = writeBatch(db);
   batch.update(doc(db, 'messes', mess.id, 'months', cur.id), {
     status: 'closed',
@@ -892,7 +928,7 @@ export async function closePeriod() {
     tok: token,
   });
   batch.set(doc(collection(db, 'messes', mess.id, 'months')), {
-    startDate: now,
+    startDate: nextDayTs,
     endDate: null,
     note: null,
     status: 'open',

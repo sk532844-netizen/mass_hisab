@@ -649,6 +649,7 @@ function History({ reloadKey, admin }) {
   const { t, lang, fmt } = useLang();
   const [hist, setHist] = useState(null);
   const [open, setOpen] = useState(null);
+  const [expanded, setExpanded] = useState(null);
   const [rk, setRk] = useState(0);
   useEffect(() => {
     api.monthHistory().then(setHist).catch(() => setHist([]));
@@ -656,10 +657,18 @@ function History({ reloadKey, admin }) {
   if (hist === null) return <p className="center">{t('loading')}</p>;
   if (!hist.length) return <p className="center dim">{t('noClosedYet')}</p>;
   const label = (h) => api.periodDisplay(h, lang);
-  return hist.map((h, i) => (
+  return hist.map((h, i) => {
+    const isExp = expanded === h.id;
+    return (
     <div className="card" key={h.id || i}>
-      <h3>{label(h)}</h3>
+      <h3
+        style={{ cursor: 'pointer' }}
+        onClick={() => setExpanded(isExp ? null : h.id)}
+      >
+        {isExp ? '▼' : '▶'} {label(h)}
+      </h3>
       <p className="dim">{t('fundTotal')} <b>{fmt(h.total_advance)}</b></p>
+      {isExp && (<>
       <BalanceTable members={h.members || []} payments={h.payments || []} />
       <SettlementSection members={h.members || []} payments={h.payments || []} expenses={h.expenses || []}
         monthId={h.id} monthLabel={label(h)} admin={admin}
@@ -673,8 +682,10 @@ function History({ reloadKey, admin }) {
       {admin && open === h.id && (
         <HistoryDetail monthId={h.id} onChanged={() => setRk((r) => r + 1)} />
       )}
+      </>)}
     </div>
-  ));
+    );
+  });
 }
 
 // বন্ধ পিরিয়ডের raw রেকর্ড — ভুল ঠিক করার জন্য (শুধু অ্যাডমিন)
