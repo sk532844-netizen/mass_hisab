@@ -1338,8 +1338,9 @@ function MemberApp({ session, onLogout }) {
         {tab === 'dash' && <>
           {me && (
             <div className="stats">
-              <div className="stat"><span>{t('youPaid')}</span><b>{fmt(me.paid)}</b></div>
+              <div className="stat"><span>{t('youPaid')}</span><b>{fmt(me.paidOwn != null ? me.paidOwn : me.paid)}</b></div>
               <div className="stat"><span>{t('yourAdvance')}</span><b>{fmt(me.advance)}</b></div>
+              <div className="stat"><span>{t('thTotalDep')}</span><b>{fmt((me.paidOwn != null ? me.paidOwn : me.paid) + (me.advance || 0))}</b></div>
             </div>
           )}
           <BalanceTable members={data.members} payments={data.payments || []} />
