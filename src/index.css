@@ -50,6 +50,34 @@ body {
 @keyframes slideUp { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
 @keyframes shimmer { 0% { background-position: -200% 0; } 100% { background-position: 200% 0; } }
 
+/* ---------- Splash screen ---------- */
+.splash {
+  position: fixed; inset: 0; z-index: 1000;
+  background: linear-gradient(160deg, #043c2a 0%, #064e35 45%, #0b7a55 100%);
+  display: flex; flex-direction: column;
+  align-items: center; justify-content: center;
+  animation: splashOut .4s ease 1.9s both;
+}
+.splash-logo-wrap { position: relative; animation: splashLogoIn 1.1s cubic-bezier(.22,1,.36,1) both; }
+.splash-logo { width: 170px; height: 170px; border-radius: 38px; box-shadow: 0 24px 60px rgba(0,0,0,.45), 0 0 0 4px rgba(255,255,255,.12); }
+.splash-ring { position: absolute; inset: -14px; border-radius: 50px; border: 2px solid rgba(245,179,1,.6); animation: splashRing 1.4s ease-out .3s both; }
+.splash-coin { position: absolute; font-size: 26px; animation: splashCoin .7s cubic-bezier(.22,1,.36,1) both; }
+.splash-coin.c1 { top: -14px; left: -8px; animation-delay: .5s; }
+.splash-coin.c2 { top: -10px; right: -6px; animation-delay: .65s; }
+.splash-coin.c3 { bottom: -10px; left: 18px; animation-delay: .8s; }
+.splash-name { color: #fff; font-size: 2rem; font-weight: 800; margin-top: 26px; animation: splashName .8s ease .5s both; }
+.splash-tag { color: rgba(255,255,255,.75); font-size: .95rem; margin-top: 6px; animation: splashName .8s ease .7s both; }
+.splash-dots { display: flex; gap: 6px; margin-top: 30px; }
+.splash-dots span { width: 8px; height: 8px; border-radius: 50%; background: #f5b301; animation: splashDot 1s ease-in-out infinite; }
+.splash-dots span:nth-child(2) { animation-delay: .15s; }
+.splash-dots span:nth-child(3) { animation-delay: .3s; }
+@keyframes splashLogoIn { 0% { opacity: 0; transform: scale(.5) rotate(-6deg); } 70% { transform: scale(1.06) rotate(1deg); } 100% { opacity: 1; transform: scale(1) rotate(0); } }
+@keyframes splashRing { 0% { opacity: 1; transform: scale(.85); } 100% { opacity: 0; transform: scale(1.35); } }
+@keyframes splashCoin { 0% { opacity: 0; transform: scale(0) translateY(8px); } 100% { opacity: 1; transform: scale(1) translateY(0); } }
+@keyframes splashName { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: translateY(0); } }
+@keyframes splashDot { 0%, 100% { opacity: .3; transform: scale(.8); } 50% { opacity: 1; transform: scale(1.2); } }
+@keyframes splashOut { to { opacity: 0; visibility: hidden; } }
+
 /* ---------- Hero ---------- */
 .hero {
   background: linear-gradient(140deg, var(--p-deep) 0%, var(--p-dark) 45%, var(--p1) 75%, var(--p2) 100%);
