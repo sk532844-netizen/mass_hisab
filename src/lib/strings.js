@@ -1,7 +1,7 @@
 // বাংলা ↔ English UI strings. {name} জাতীয় placeholder t(k, {name}) দিয়ে বসে।
 export const STR = {
   bn: {
-    appName: 'মেস হিসাব',
+    appName: 'MassBook',
     tagline: 'মাসের খরচের সহজ হিসাব — অ্যাডমিন ও মেম্বারদের জন্য',
     loading: 'লোড হচ্ছে…',
     login: 'লগইন',
@@ -38,6 +38,7 @@ export const STR = {
       'পাসওয়ার্ড ভুলে গেলে এই কোড দিয়ে রিসেট করতে পারবে। এটা নিরাপদ জায়গায় লিখে রাখো — আর কখনো দেখানো হবে না।',
     savedGoIn: 'সংরক্ষণ করেছি, ভেতরে ঢুকো',
     onlineSafe: 'তোমার সব হিসাব নিরাপদে অনলাইনে সংরক্ষিত থাকে',
+    aboutDev: 'Developed by Abu Sayed',
     errPrefix: 'ত্রুটি: ',
     messCodeLabel: 'মেস কোড:',
     logout: 'বের হও',
@@ -198,7 +199,7 @@ export const STR = {
     qNewRecovery: 'নতুন রিকভারি কোড বানাবে? পুরনো কোড বাতিল হয়ে যাবে।',
   },
   en: {
-    appName: 'Mess Hisab',
+    appName: 'MassBook',
     tagline: 'Simple monthly expense tracking — for admins & members',
     loading: 'Loading…',
     login: 'Login',
@@ -235,6 +236,7 @@ export const STR = {
       'If you forget your password, you can reset it with this code. Write it down somewhere safe — it will never be shown again.',
     savedGoIn: "I've saved it, let me in",
     onlineSafe: 'All your records are safely stored online',
+    aboutDev: 'Developed by Abu Sayed',
     errPrefix: 'Error: ',
     messCodeLabel: 'Mess code:',
     logout: 'Logout',
