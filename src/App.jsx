@@ -590,6 +590,12 @@ function PaymentDialog({ info, onClose, onDone }) {
   const go = async (e) => {
     e.preventDefault(); setMsg('');
     if (!payDate) { setMsg(t('errPrefix') + t('expDateReq')); return; }
+    const amt = Number(amount) || 0;
+    // Client-side overpayment guard — সার্ভারেও আছে
+    if (amt > info.max + 0.5) {
+      setMsg(t('errPrefix') + t('payOverMax', { max: fmt(Math.round(info.max)) }));
+      return;
+    }
     if (!confirming) { setConfirming(true); return; }
     setBusy(true);
     try {
