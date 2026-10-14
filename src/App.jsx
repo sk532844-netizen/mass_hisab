@@ -2,6 +2,21 @@ import { useState, useEffect, Component, createContext, useContext } from 'react
 import * as api from './lib/api';
 import { STR, catLabel } from './lib/strings';
 
+// YYYY-MM-DD → "১৪ অক্টোবর ২০২৬" / "14 Oct 2026"
+function fmtDate(ds, lang = 'bn') {
+  if (!ds || typeof ds !== 'string') return '';
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(ds);
+  if (!m) return ds;
+  const monthsBn = ['জানুয়ারি','ফেব্রুয়ারি','মার্চ','এপ্রিল','মে','জুন','জুলাই','আগস্ট','সেপ্টেম্বর','অক্টোবর','নভেম্বর','ডিসেম্বর'];
+  const monthsEn = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  const d = parseInt(m[3], 10), mo = parseInt(m[2], 10);
+  if (lang === 'bn') {
+    const bn = (n) => String(n).replace(/\d/g, (x) => '০১২৩৪৫৬৭৮৯'[x]);
+    return `${bn(d)} ${monthsBn[mo - 1]} ${bn(m[1])}`;
+  }
+  return `${d} ${monthsEn[mo - 1]} ${m[1]}`;
+}
+
 /* ================= Language ================= */
 
 const LangCtx = createContext(null);
@@ -352,25 +367,32 @@ function Header({ session, onLogout }) {
   );
 }
 
-function BalanceTable({ members }) {
+function BalanceTable({ members, payments }) {
   const { t, fmt } = useLang();
-  const s = api.settle(members);
+  const fs = api.fundSettlement(members || [], payments || []);
+  const balCell = (r) => {
+    const gross = r.balance || 0;
+    const net = r.netBalance != null ? r.netBalance : gross;
+    if (Math.abs(gross) < 0.5) return <span className="dim">—</span>;
+    if (Math.abs(net) < 0.5) return <span className="pos">{t('paidDone')}</span>;
+    return net >= 0 ? `${t('willGet')} ${fmt(net)}` : `${t('willGive')} ${fmt(-net)}`;
+  };
   return (
     <>
       <div className="stats">
-        <div className="stat"><span>{t('totalExpense')}</span><b>{fmt(s.total)}</b></div>
-        <div className="stat"><span>{t('perHead')}</span><b>{fmt(s.share)}</b></div>
+        <div className="stat"><span>{t('totalExpense')}</span><b>{fmt(fs.total)}</b></div>
+        <div className="stat"><span>{t('perHead')}</span><b>{fmt(fs.share)}</b></div>
       </div>
       <table className="tbl">
         <thead><tr><th>{t('thName')}</th><th>{t('thPaid')}</th><th>{t('thAdvance')}</th><th>{t('thBalance')}</th></tr></thead>
         <tbody>
-          {s.rows.map((r, i) => (
+          {fs.rows.map((r, i) => (
             <tr key={r.id || i}>
               <td>{r.display_name}{r.role === 'admin' ? ' 👑' : ''}{r.active === false ? t('inactiveSuffix') : ''}</td>
               <td>{fmt(r.paid)}</td>
               <td>{fmt(r.advance)}</td>
-              <td className={r.balance >= 0 ? 'pos' : 'neg'}>
-                {r.balance >= 0 ? `${t('willGet')} ${fmt(r.balance)}` : `${t('willGive')} ${fmt(-r.balance)}`}
+              <td className={(r.netBalance != null ? r.netBalance : r.balance) >= 0 ? 'pos' : 'neg'}>
+                {balCell(r)}
               </td>
             </tr>
           ))}
@@ -380,13 +402,33 @@ function BalanceTable({ members }) {
   );
 }
 
-function buildCopy(monthLabel, fs, t, fmt) {
+function buildCopy(monthLabel, fs, t, fmt, lang, expenses, payments, members) {
   const lines = [];
   lines.push(`📊 ${monthLabel}`);
   lines.push(`${t('copyL1')} ${fmt(fs.total)} | ${t('copyL2')} ${fmt(fs.share)} | ${t('copyL3')} ${fmt(fs.fundTotal)}`);
   lines.push('');
   for (const r of fs.rows) {
-    lines.push(`${r.display_name} — ${r.balance >= 0 ? t('willGet') : t('willGive')} ${fmt(Math.abs(r.balance))}`);
+    const net = r.netBalance != null ? r.netBalance : r.balance;
+    const gross = r.balance || 0;
+    let st;
+    if (Math.abs(gross) < 0.5) st = fmt(0);
+    else if (Math.abs(net) < 0.5) st = t('paidDone');
+    else st = `${net >= 0 ? t('willGet') : t('willGive')} ${fmt(Math.abs(net))}`;
+    lines.push(`${r.display_name} — ${st}`);
+  }
+  // খরচের detail: কে, কবে, কী বাবদ, কত, উৎস
+  const expList = (expenses || []).filter((e) => e && e.amount > 0);
+  if (expList.length) {
+    lines.push('');
+    lines.push(t('copyExpDetail') || '🧾 খরচের বিবরণ:');
+    const nameOf = (id) => (members || []).find((m) => m.id === id)?.display_name || '?';
+    for (const e of expList) {
+      const who = e.by || nameOf(e.byId) || '?';
+      const when = e.expenseDate ? fmtDate(e.expenseDate, lang) : '';
+      const what = catLabel(e.category, lang);
+      const src = e.source === 'fund' ? ` (${t('srcFundShort') || 'ফান্ড'})` : '';
+      lines.push(`  • ${who}${when ? ` · ${when}` : ''} · ${what}: ${fmt(e.amount)}${src}${e.note ? ` — ${e.note}` : ''}`);
+    }
   }
   lines.push('');
   lines.push(t('copySettlement'));
@@ -402,12 +444,25 @@ function buildCopy(monthLabel, fs, t, fmt) {
     const st = c.remaining < 0.5 ? t('paidDone') : `${t('dueLeft')} ${fmt(c.remaining)}`;
     lines.push(`  ${c.display_name}: ${fmt(c.get)} (${st})`);
   }
+  // পেমেন্ট হিস্ট্রি (তারিখসহ)
+  const payList = (payments || []).filter((p) => p && p.amount > 0);
+  if (payList.length) {
+    lines.push('');
+    lines.push(t('payHistory') + ':');
+    const nameOf = (id) => (members || []).find((m) => m.id === id)?.display_name || '?';
+    const sorted = payList.slice().sort((a, b) => String(a.paymentDate || a.at || '').localeCompare(String(b.paymentDate || b.at || '')));
+    for (const p of sorted) {
+      const when = p.paymentDate ? fmtDate(p.paymentDate, lang) : '';
+      const dir = p.kind === 'in' ? `${nameOf(p.memberId)} → ${t('fundTotal').replace(':', '')}` : `${t('fundTotal').replace(':', '')} → ${nameOf(p.memberId)}`;
+      lines.push(`  • ${when ? when + ' · ' : ''}${dir}: ${fmt(p.amount)}`);
+    }
+  }
   return lines.join('\n');
 }
 
 // ফান্ড মিটমাট সেকশন: 📥 ফান্ডে জমা দেবে / 📤 ফান্ড থেকে পাবে + পেমেন্ট রেকর্ড + কপি
-function SettlementSection({ members, payments, monthId, monthLabel, admin, onDone }) {
-  const { t, fmt } = useLang();
+function SettlementSection({ members, payments, expenses, monthId, monthLabel, admin, onDone }) {
+  const { t, fmt, lang } = useLang();
   const [payDlg, setPayDlg] = useState(null);
   const [delPay, setDelPay] = useState(null);
   const [copied, setCopied] = useState(false);
@@ -417,7 +472,7 @@ function SettlementSection({ members, payments, monthId, monthLabel, admin, onDo
   const nameOf = (id) => (members || []).find((m) => m.id === id)?.display_name || '?';
 
   const doCopy = async () => {
-    const ok = await copyText(buildCopy(monthLabel, fs, t, fmt));
+    const ok = await copyText(buildCopy(monthLabel, fs, t, fmt, lang, expenses, payments, members));
     if (ok) {
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
@@ -481,6 +536,7 @@ function SettlementSection({ members, payments, monthId, monthLabel, admin, onDo
           {payList.map((p) => (
             <div className="row" key={p.id}>
               <div><small>
+                {p.paymentDate ? `📅 ${fmtDate(p.paymentDate, lang)} · ` : ''}
                 {p.kind === 'in' ? `${nameOf(p.memberId)} → ${t('fundTotal').replace(':', '')}` : `${t('fundTotal').replace(':', '')} → ${nameOf(p.memberId)}`}
                 : <b>{fmt(p.amount)}</b>{p.note ? ` — ${p.note}` : ''}
               </small></div>
@@ -506,15 +562,20 @@ function SettlementSection({ members, payments, monthId, monthLabel, admin, onDo
 }
 
 function PaymentDialog({ info, onClose, onDone }) {
-  const { t } = useLang();
+  const { t, fmt } = useLang();
   const [amount, setAmount] = useState(String(Math.round(info.max)));
   const [note, setNote] = useState('');
+  const [payDate, setPayDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [confirming, setConfirming] = useState(false);
   const [msg, setMsg] = useState('');
   const [busy, setBusy] = useState(false);
   const go = async (e) => {
-    e.preventDefault(); setMsg(''); setBusy(true);
+    e.preventDefault(); setMsg('');
+    if (!payDate) { setMsg(t('errPrefix') + t('expDateReq')); return; }
+    if (!confirming) { setConfirming(true); return; }
+    setBusy(true);
     try {
-      await api.recordPayment(info.monthId, info.memberId, info.kind, Number(amount), note);
+      await api.recordPayment(info.monthId, info.memberId, info.kind, Number(amount), note, payDate);
       onDone();
     } catch (e2) { setMsg(t('errPrefix') + e2.message); }
     setBusy(false);
@@ -525,13 +586,20 @@ function PaymentDialog({ info, onClose, onDone }) {
         <h3>{t('payDialogTitle')}</h3>
         <p className="dim">{t(info.kind === 'in' ? 'payInLabel' : 'payOutLabel', { name: info.name })}</p>
         <label>{t('payAmount')}<input type="number" min="1" step="any" value={amount}
-          onChange={(e) => setAmount(e.target.value)} required /></label>
+          onChange={(e) => { setAmount(e.target.value); setConfirming(false); }} required /></label>
+        <label>{t('payDateLabel')}<input type="date" value={payDate}
+          onChange={(e) => { setPayDate(e.target.value); setConfirming(false); }} required /></label>
         <label><input value={note} onChange={(e) => setNote(e.target.value)}
           placeholder={t('payNotePh')} /></label>
+        {confirming && (
+          <p className="confirmbox">⚠️ {t('payConfirmMsg', { amount: fmt(Number(amount) || 0) })}</p>
+        )}
         {msg && <p className="err">{msg}</p>}
         <div className="btnrow">
-          <button disabled={busy}>{busy ? t('saving') : t('paySave')}</button>
-          <button type="button" className="ghost" onClick={onClose}>{t('cancel')}</button>
+          <button disabled={busy}>{busy ? t('saving') : confirming ? t('payYes') : t('paySave')}</button>
+          {confirming
+            ? <button type="button" className="ghost" onClick={() => setConfirming(false)}>{t('payNo')}</button>
+            : <button type="button" className="ghost" onClick={onClose}>{t('cancel')}</button>}
         </div>
       </form>
     </Modal>
@@ -566,8 +634,8 @@ function History({ reloadKey, admin }) {
     <div className="card" key={h.id || i}>
       <h3>{label(h)}</h3>
       <p className="dim">{t('fundTotal')} <b>{fmt(h.total_advance)}</b></p>
-      <BalanceTable members={h.members || []} />
-      <SettlementSection members={h.members || []} payments={h.payments || []}
+      <BalanceTable members={h.members || []} payments={h.payments || []} />
+      <SettlementSection members={h.members || []} payments={h.payments || []} expenses={h.expenses || []}
         monthId={h.id} monthLabel={label(h)} admin={admin}
         onDone={() => setRk((r) => r + 1)} />
       <CategoryBreakdown items={h.byCategory} />
@@ -618,12 +686,17 @@ function SingleExpenseForm({ onDone }) {
   const [amount, setAmount] = useState('');
   const [cat, setCat] = useState(api.CATEGORIES[0]);
   const [note, setNote] = useState('');
+  const [expDate, setExpDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [source, setSource] = useState('own');
   const [msg, setMsg] = useState('');
   const go = async (e) => {
     e.preventDefault(); setMsg('');
+    if (!expDate) { setMsg(t('errPrefix') + t('expDateReq')); return; }
     try {
-      await api.submitExpense(Number(amount), cat, note);
+      await api.submitExpense(Number(amount), cat, note, { source, expenseDate: expDate });
       setAmount(''); setNote('');
+      setExpDate(new Date().toISOString().slice(0, 10));
+      setSource('own');
       setMsg(t('sent'));
       onDone && onDone();
     } catch (e2) { setMsg(t('errPrefix') + e2.message); }
@@ -633,6 +706,15 @@ function SingleExpenseForm({ onDone }) {
       <h3>{t('addExpense')}</h3>
       <label>{t('amount')}<input type="number" min="1" step="any" value={amount}
         onChange={(e) => setAmount(e.target.value)} placeholder={t('amountPh')} required /></label>
+      <label>{t('expDateLabel')}<input type="date" value={expDate}
+        onChange={(e) => setExpDate(e.target.value)} required /></label>
+      <label>{t('srcLabel')}
+        <div className="tabs sm">
+          <button type="button" className={source === 'own' ? 'on' : ''} onClick={() => setSource('own')}
+            title={t('srcOwnHint')}>{t('srcOwn')}</button>
+          <button type="button" className={source === 'fund' ? 'on' : ''} onClick={() => setSource('fund')}
+            title={t('srcFundHint')}>{t('srcFund')}</button>
+        </div></label>
       <label>{t('category')}
         <select value={cat} onChange={(e) => setCat(e.target.value)}>
           {api.CATEGORIES.map((c) => <option key={c} value={c}>{catLabel(c, lang)}</option>)}
@@ -651,6 +733,8 @@ function SplitExpenseForm({ members, onDone }) {
   const [amount, setAmount] = useState('');
   const [cat, setCat] = useState(api.CATEGORIES[0]);
   const [note, setNote] = useState('');
+  const [expDate, setExpDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [source, setSource] = useState('own');
   const [sel, setSel] = useState({});
   const [shares, setShares] = useState({});
   const [msg, setMsg] = useState('');
@@ -668,6 +752,7 @@ function SplitExpenseForm({ members, onDone }) {
   const sumShares = ids.reduce((s, id) => s + Number(shares[id] || 0), 0);
   const go = async (e) => {
     e.preventDefault(); setMsg('');
+    if (!expDate) { setMsg(t('expDateReq')); return; }
     if (ids.length < 2) { setMsg(t('splitNeed2')); return; }
     if (Math.abs(sumShares - Number(amount)) > 0.01) { setMsg(t('splitSumMismatch')); return; }
     try {
@@ -675,9 +760,13 @@ function SplitExpenseForm({ members, onDone }) {
         amount: Number(amount),
         category: cat,
         note,
+        source,
+        expenseDate: expDate,
         splits: ids.map((id) => ({ memberId: id, amount: Number(shares[id]) })),
       });
       setAmount(''); setNote(''); setSel({}); setShares({});
+      setExpDate(new Date().toISOString().slice(0, 10));
+      setSource('own');
       setMsg(t('sent'));
       onDone && onDone();
     } catch (e2) { setMsg(t('errPrefix') + e2.message); }
@@ -687,6 +776,13 @@ function SplitExpenseForm({ members, onDone }) {
       <h3>{t('addExpense')} — {t('modeSplit')}</h3>
       <label>{t('amount')}<input type="number" min="1" step="any" value={amount}
         onChange={(e) => setAmount(e.target.value)} placeholder={t('amountPh')} required /></label>
+      <label>{t('expDateLabel')}<input type="date" value={expDate}
+        onChange={(e) => setExpDate(e.target.value)} required /></label>
+      <label>{t('srcLabel')}
+        <div className="tabs sm">
+          <button type="button" className={source === 'own' ? 'on' : ''} onClick={() => setSource('own')}>{t('srcOwn')}</button>
+          <button type="button" className={source === 'fund' ? 'on' : ''} onClick={() => setSource('fund')}>{t('srcFund')}</button>
+        </div></label>
       <label>{t('category')}
         <select value={cat} onChange={(e) => setCat(e.target.value)}>
           {api.CATEGORIES.map((c) => <option key={c} value={c}>{catLabel(c, lang)}</option>)}
@@ -726,12 +822,14 @@ function ExpenseEditDialog({ expense, onClose, onDone }) {
   const [amount, setAmount] = useState(String(expense.amount ?? ''));
   const [cat, setCat] = useState(expense.category || api.CATEGORIES[0]);
   const [note, setNote] = useState(expense.note || '');
+  const [expDate, setExpDate] = useState(expense.expenseDate || new Date().toISOString().slice(0, 10));
+  const [source, setSource] = useState(expense.source === 'fund' ? 'fund' : 'own');
   const [msg, setMsg] = useState('');
   const [busy, setBusy] = useState(false);
   const go = async (e) => {
     e.preventDefault(); setMsg(''); setBusy(true);
     try {
-      await api.updateExpense(expense.id, { amount: Number(amount), category: cat, note });
+      await api.updateExpense(expense.id, { amount: Number(amount), category: cat, note, source, expenseDate: expDate });
       onDone();
     } catch (e2) { setMsg(t('errPrefix') + e2.message); }
     setBusy(false);
@@ -742,6 +840,13 @@ function ExpenseEditDialog({ expense, onClose, onDone }) {
         <h3>{t('editExpense')}</h3>
         <label>{t('amount')}<input type="number" min="1" step="any" value={amount}
           onChange={(e) => setAmount(e.target.value)} required /></label>
+        <label>{t('expDateLabel')}<input type="date" value={expDate}
+          onChange={(e) => setExpDate(e.target.value)} required /></label>
+        <label>{t('srcLabel')}
+          <div className="tabs sm">
+            <button type="button" className={source === 'own' ? 'on' : ''} onClick={() => setSource('own')}>{t('srcOwn')}</button>
+            <button type="button" className={source === 'fund' ? 'on' : ''} onClick={() => setSource('fund')}>{t('srcFund')}</button>
+          </div></label>
         <label>{t('category')}
           <select value={cat} onChange={(e) => setCat(e.target.value)}>
             {api.CATEGORIES.map((c) => <option key={c} value={c}>{catLabel(c, lang)}</option>)}
@@ -805,7 +910,7 @@ function AdminApp({ session, onLogout }) {
     <div className="wrap">
       <Header session={session} onLogout={onLogout} />
       <div className="tabs">
-        {[['dash', t('tabDash')], ['pending', t('tabPending')], ['members', t('tabMembers')],
+        {[['dash', t('tabDash')], ['add', t('tabAdd')], ['pending', t('tabPending')], ['members', t('tabMembers')],
           ['adv', t('tabAdv')], ['month', t('tabPeriod')]].map(([k, l]) => (
           <button key={k} className={tab === k ? 'on' : ''} onClick={() => setTab(k)}>{l}</button>
         ))}
@@ -820,10 +925,12 @@ function AdminApp({ session, onLogout }) {
         : !data ? <p className="center">{t('loading')}</p> : <>
         {tab === 'dash' && <>
           <h2>{periodLabel}</h2>
-          <BalanceTable members={data.members} />
-          <SettlementSection members={data.members} payments={data.payments || []}
+          <BalanceTable members={data.members} payments={data.payments || []} />
+          <SettlementSection members={data.members} payments={data.payments || []} expenses={data.approvedExpenses || []}
             monthId={data.month.id} monthLabel={periodLabel} admin onDone={refresh} />
           <CategoryBreakdown items={data.byCategory} />
+        </>}
+        {tab === 'add' && <>
           <ExpenseForm members={data.members} onDone={refresh} />
           <h3>{t('recentExpense')}</h3>
           <ExpenseList items={data.recent} admin onDone={refresh} />
@@ -858,8 +965,9 @@ function ExpenseList({ items, admin, onDone }) {
       {err && <p className="err">{err}</p>}
       {items.map((e) => (
         <div className="row" key={e.id}>
-          <div><b>{fmt(e.amount)}</b> · {catLabel(e.category, lang)}<br />
-            <small>{e.by}{e.note ? ` — ${e.note}` : ''}</small></div>
+          <div><b>{fmt(e.amount)}</b> · {catLabel(e.category, lang)}
+            {e.source === 'fund' && <span className="badge fundsrc" title={t('srcFundHint')}>{t('srcFund')}</span>}<br />
+            <small>{e.by}{e.expenseDate ? ` · 📅 ${fmtDate(e.expenseDate, lang)}` : ''}{e.note ? ` — ${e.note}` : ''}</small></div>
           <div className="btnrow">
             <span className={`badge ${e.status}`}>{stLabel(e.status)}</span>
             {admin && <>
@@ -937,8 +1045,9 @@ function PendingList({ items, onDone }) {
       {err && <p className="err">{err}</p>}
       {items.map((e) => (
         <div className="card" key={e.id}>
-          <p><b>{fmt(e.amount)}</b> · {catLabel(e.category, lang)} — {e.by}<br />
-            <small>{e.note || t('noNote')}</small></p>
+          <p><b>{fmt(e.amount)}</b> · {catLabel(e.category, lang)} — {e.by}
+            {e.source === 'fund' && <span className="badge fundsrc">{t('srcFund')}</span>}<br />
+            <small>{e.expenseDate ? `📅 ${fmtDate(e.expenseDate, lang)} · ` : ''}{e.note || t('noNote')}</small></p>
           <input placeholder={t('noteOpt')} value={note[e.id] || ''}
             onChange={(ev) => setNote({ ...note, [e.id]: ev.target.value })} />
           <div className="btnrow">
@@ -1175,6 +1284,7 @@ function MemberApp({ session, onLogout }) {
   const [data, setData] = useState(null);
   const [failed, setFailed] = useState(false);
   const [reload, setReload] = useState(0);
+  const [tab, setTab] = useState('dash');
   useEffect(() => {
     setFailed(false);
     api.dashboard().then(setData).catch(() => setFailed(true));
@@ -1186,6 +1296,11 @@ function MemberApp({ session, onLogout }) {
   return (
     <div className="wrap">
       <Header session={session} onLogout={onLogout} />
+      <div className="tabs">
+        {[['dash', t('tabDash')], ['add', t('tabAdd')], ['month', t('tabPeriod')]].map(([k, l]) => (
+          <button key={k} className={tab === k ? 'on' : ''} onClick={() => setTab(k)}>{l}</button>
+        ))}
+      </div>
       {failed
         ? <div className="card"><h3>{t('dataFail')}</h3>
             <p className="dim">{t('checkNet')}</p>
@@ -1195,21 +1310,27 @@ function MemberApp({ session, onLogout }) {
             </div></div>
         : !data ? <p className="center">{t('loading')}</p> : <>
         <h2>{periodLabel}</h2>
-        {me && (
-          <div className="stats">
-            <div className="stat"><span>{t('youPaid')}</span><b>{fmt(me.paid)}</b></div>
-            <div className="stat"><span>{t('yourAdvance')}</span><b>{fmt(me.advance)}</b></div>
-          </div>
-        )}
-        <BalanceTable members={data.members} />
-        <SettlementSection members={data.members} payments={data.payments || []}
-          monthId={data.month.id} monthLabel={periodLabel} onDone={refresh} />
-        <CategoryBreakdown items={data.byCategory} />
-        <ExpenseForm members={data.members} onDone={refresh} />
-        <h3>{t('yourExpenses')}</h3>
-        <ExpenseList items={[...(data.pending || []), ...(data.recent || [])]} />
-        <h3>{t('oldPeriods')}</h3>
-        <History reloadKey={reload} />
+        {tab === 'dash' && <>
+          {me && (
+            <div className="stats">
+              <div className="stat"><span>{t('youPaid')}</span><b>{fmt(me.paid)}</b></div>
+              <div className="stat"><span>{t('yourAdvance')}</span><b>{fmt(me.advance)}</b></div>
+            </div>
+          )}
+          <BalanceTable members={data.members} payments={data.payments || []} />
+          <SettlementSection members={data.members} payments={data.payments || []} expenses={data.approvedExpenses || []}
+            monthId={data.month.id} monthLabel={periodLabel} onDone={refresh} />
+          <CategoryBreakdown items={data.byCategory} />
+        </>}
+        {tab === 'add' && <>
+          <ExpenseForm members={data.members} onDone={refresh} />
+          <h3>{t('yourExpenses')}</h3>
+          <ExpenseList items={[...(data.pending || []), ...(data.recent || [])]} />
+        </>}
+        {tab === 'month' && <>
+          <h3>{t('oldPeriods')}</h3>
+          <History reloadKey={reload} />
+        </>}
       </>}
     </div>
   );
