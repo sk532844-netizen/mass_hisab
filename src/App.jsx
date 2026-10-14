@@ -373,12 +373,12 @@ function BalanceTable({ members, payments }) {
   const balCell = (r) => {
     const d = (fs.debtors || []).find((x) => x.id === r.id);
     if (d) {
-      if (d.remaining < 0.5) return <span className="pos">{t('paidDone')}</span>;
+      if (d.remaining < 0.5) return <span className="pos">{t('willGive')} {fmt(d.owe)} ({t('paidDone')})</span>;
       return `${t('willGive')} ${fmt(d.remaining)}`;
     }
     const c = (fs.creditors || []).find((x) => x.id === r.id);
     if (c) {
-      if (c.remaining < 0.5) return <span className="pos">{t('paidDone')}</span>;
+      if (c.remaining < 0.5) return <span className="pos">{t('willGet')} {fmt(c.get)} ({t('paidDone')})</span>;
       return `${t('willGet')} ${fmt(c.remaining)}`;
     }
     return <span className="dim">—</span>;
@@ -427,9 +427,9 @@ function buildCopy(monthLabel, fs, t, fmt, lang, expenses, payments, members) {
     const c = (fs.creditors || []).find((x) => x.id === r.id);
     let st;
     if (d) {
-      st = d.remaining < 0.5 ? t('paidDone') : `${t('willGive')} ${fmt(d.remaining)}`;
+      st = d.remaining < 0.5 ? `${t('willGive')} ${fmt(d.owe)} (${t('paidDone')})` : `${t('willGive')} ${fmt(d.remaining)}`;
     } else if (c) {
-      st = c.remaining < 0.5 ? t('paidDone') : `${t('willGet')} ${fmt(c.remaining)}`;
+      st = c.remaining < 0.5 ? `${t('willGet')} ${fmt(c.get)} (${t('paidDone')})` : `${t('willGet')} ${fmt(c.remaining)}`;
     } else {
       st = fmt(0);
     }
