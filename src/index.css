@@ -201,6 +201,12 @@ button.danger-btn { background: linear-gradient(135deg, #e0655f, var(--danger));
 .badge.approved { background: #dcf5e8; color: var(--p-dark); }
 .badge.pending { background: #fff1cf; color: #9a6b00; }
 .badge.rejected { background: #fde4e1; color: var(--danger); }
+.badge.fundsrc { background: #e3e9fd; color: #2b4acb; margin-left: 6px; }
+
+.confirmbox {
+  background: #fff8e1; border: 1px solid #f0c36d; border-radius: 10px;
+  padding: 10px 14px; font-weight: 600;
+}
 
 .settle { padding: 8px 0; border-bottom: 1px dashed var(--line); font-size: .95rem; }
 .settle:last-child { border-bottom: none; }
