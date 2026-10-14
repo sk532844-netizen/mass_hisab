@@ -1,5 +1,6 @@
 name: Build Android APK
 
+
 on:
   workflow_dispatch:
   push:
@@ -9,6 +10,7 @@ on:
       - 'capacitor.config.json'
       - 'android/**'
       - 'package.json'
+
 
 jobs:
   build-apk:
@@ -26,6 +28,13 @@ jobs:
         run: npm install
       - name: Build web
         run: npm run build
+        env:
+          VITE_FIREBASE_API_KEY: AIzaSyBfLJLdZ_44-mW155TQdSjcHc60ds9UHhY
+          VITE_FIREBASE_AUTH_DOMAIN: mass--2.firebaseapp.com
+          VITE_FIREBASE_PROJECT_ID: mass--2
+          VITE_FIREBASE_STORAGE_BUCKET: mass--2.firebasestorage.app
+          VITE_FIREBASE_MESSAGING_SENDER_ID: 854323042772
+          VITE_FIREBASE_APP_ID: 1:854323042772:web:a019ef3d892c55baf45e41
       - name: Sync Capacitor
         run: |
           npx cap add android || true
