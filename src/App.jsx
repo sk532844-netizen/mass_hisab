@@ -395,6 +395,7 @@ function BalanceTable({ members, payments }) {
       <div className="stats">
         <div className="stat"><span>{t('totalExpense')}</span><b>{fmt(fs.total)}</b></div>
         <div className="stat"><span>{t('perHead')}</span><b>{fmt(fs.share)}</b></div>
+        <div className="stat"><span>{t('fundInHand')}</span><b>{fmt(fs.fundBalance != null ? fs.fundBalance : fs.fundTotal)}</b></div>
       </div>
       <table className="tbl">
         <thead><tr><th>{t('thName')}</th><th>{t('thPaid')}</th><th>{t('thAdvance')}</th><th>{t('thTotalDep')}</th><th>{t('thBalance')}</th></tr></thead>
