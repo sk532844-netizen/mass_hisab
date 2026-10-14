@@ -143,7 +143,7 @@ function SplashScreen() {
     <div className="splash">
       <div className="splash-logo-wrap">
         <div className="splash-ring"></div>
-        <img className="splash-logo" src="./logo.png" alt="MassBook" />
+        <img className="splash-logo" src="./logo.jpg" alt="MassBook" />
         <span className="splash-coin c1">🪙</span>
         <span className="splash-coin c2">✨</span>
         <span className="splash-coin c3">🪙</span>
