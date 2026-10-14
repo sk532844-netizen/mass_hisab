@@ -151,6 +151,13 @@ export function periodRangeLabel(startMs, endMs, lang) {
   const dd = (n) => (en ? String(n) : bnD(n));
   const mm = (i) => (en ? EN_MONTHS[i] : BN_MONTHS[i]);
   const yy = (y) => (en ? String(y) : bnD(y));
+  // একই দিনে শুরু-শেষ হলে একটাই তারিখ দেখাও ("১–১ অক্টোবর" নয়)
+  if (
+    s.getFullYear() === e.getFullYear() &&
+    s.getMonth() === e.getMonth() &&
+    s.getDate() === e.getDate()
+  )
+    return `${dd(s.getDate())} ${mm(s.getMonth())} ${yy(s.getFullYear())}`;
   if (s.getFullYear() === e.getFullYear() && s.getMonth() === e.getMonth())
     return `${dd(s.getDate())}–${dd(e.getDate())} ${mm(s.getMonth())} ${yy(s.getFullYear())}`;
   if (s.getFullYear() === e.getFullYear())
@@ -691,11 +698,51 @@ export async function recordPayment(monthId, memberId, kind, amount, note, payme
   if (!uSnap.exists()) throw new Error('NOT_FOUND');
   const mSnap = await getDoc(doc(db, 'messes', mess.id, 'months', monthId));
   if (!mSnap.exists()) throw new Error('NOT_FOUND');
+  // Overpayment প্রতিরোধ: বাকির চেয়ে বেশি রেকর্ড করা যাবে না
+  const amt = Number(amount);
+  const [uAllSnap, eSnap, aSnap, pSnap] = await Promise.all([
+    getDocs(query(usersCol(db, mess.id), orderBy('createdAt'))),
+    getDocs(query(expensesCol(db, mess.id), where('monthId', '==', monthId))),
+    getDocs(query(advancesCol(db, mess.id), where('monthId', '==', monthId))),
+    getDocs(query(paymentsCol(db, mess.id), where('monthId', '==', monthId))),
+  ]);
+  const users = uAllSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
+  const expenses = eSnap.docs.map((d) => d.data());
+  const advances = aSnap.docs.map((d) => d.data());
+  const payments = pSnap.docs.map((d) => d.data());
+  const members = users.map((u) => {
+    const ownExp = expenses.filter(
+      (e) => e.submittedBy === u.id && e.status === 'approved' && e.source !== 'fund',
+    );
+    return {
+      id: u.id,
+      display_name: u.displayName,
+      paid: expenses
+        .filter((e) => e.submittedBy === u.id && e.status === 'approved')
+        .reduce((s, e) => s + num(e.amount), 0),
+      paidOwn: ownExp.reduce((s, e) => s + num(e.amount), 0),
+      advance: advances
+        .filter((a) => a.memberId === u.id)
+        .reduce((s, a) => s + num(a.amount), 0),
+    };
+  });
+  const fs = fundSettlement(members, payments);
+  let remaining = 0;
+  if (kind === 'in') {
+    const d = (fs.debtors || []).find((x) => x.id === memberId);
+    remaining = d ? d.remaining : 0;
+  } else {
+    const c = (fs.creditors || []).find((x) => x.id === memberId);
+    remaining = c ? c.remaining : 0;
+  }
+  if (amt > remaining + 0.5) {
+    throw new Error(`বাকি ${Math.round(remaining)} টাকার বেশি রেকর্ড করা যাবে না`);
+  }
   await addDoc(paymentsCol(db, mess.id), {
     monthId,
     memberId,
     kind,
-    amount: Number(amount),
+    amount: amt,
     note: (note || '').trim() || null,
     paymentDate: validDateStr(paymentDate) || todayStr(),
     recordedBy: me.id,
@@ -720,6 +767,13 @@ export function fundSettlement(members, payments) {
   const total = members.reduce((s, m) => s + Number(m.paid), 0);
   const share = members.length ? total / members.length : 0;
   const fundTotal = members.reduce((s, m) => s + Number(m.advance), 0);
+  // ফান্ড থেকে খরচ হওয়া টাকা (actual fund balance-এর জন্য)
+  const fundSpent = members.reduce((s, m) => {
+    const paid = Number(m.paid) || 0;
+    const own = m.paidOwn != null ? Number(m.paidOwn) : paid;
+    return s + Math.max(0, paid - own);
+  }, 0);
+  const fundBalance = fundTotal - fundSpent;
   const paidIn = {};
   const paidOut = {};
   for (const p of payments || []) {
@@ -758,6 +812,8 @@ export function fundSettlement(members, payments) {
     total,
     share,
     fundTotal,
+    fundBalance,
+    fundSpent,
     debtors,
     creditors,
     dueIn: debtors.reduce((s, d) => s + d.remaining, 0),
