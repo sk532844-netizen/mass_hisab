@@ -174,6 +174,20 @@ export function periodDisplay(m, lang) {
 
 const iso = (ts) => (ts && ts.toDate ? ts.toDate().toISOString() : null);
 const num = (v) => Number(v || 0);
+// YYYY-MM-DD — খরচ/পেমেন্টের তারিখ (ইউজার দেয়, backdate allowed)
+function todayStr() {
+  const d = new Date();
+  const p = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+}
+function validDateStr(s) {
+  if (typeof s !== 'string') return null;
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s.trim());
+  if (!m) return null;
+  const y = +m[1], mo = +m[2], d = +m[3];
+  if (mo < 1 || mo > 12 || d < 1 || d > 31 || y < 2000 || y > 2100) return null;
+  return `${m[1]}-${m[2]}-${m[3]}`;
+}
 
 // ---------- session ----------
 
@@ -504,10 +518,12 @@ export async function resetMemberPassword(userId, newPassword) {
 
 // ---------- expenses & advances ----------
 
-export async function submitExpense(amount, category, note) {
+export async function submitExpense(amount, category, note, opts = {}) {
   const { db, token, me, mess } = await sessionCtx();
   if (amount == null || Number(amount) <= 0)
     throw new Error('সঠিক টাকার পরিমাণ দাও');
+  const source = opts.source === 'fund' ? 'fund' : 'own';
+  const expenseDate = validDateStr(opts.expenseDate) || todayStr();
   const month = await ensureOpenMonth(db, mess.id, token);
   const ref = await addDoc(expensesCol(db, mess.id), {
     monthId: month.id,
@@ -516,6 +532,8 @@ export async function submitExpense(amount, category, note) {
     amount: Number(amount),
     category: (category || '').trim() || 'অন্যান্য',
     note: (note || '').trim() || null,
+    source,
+    expenseDate,
     status: 'pending',
     reviewedBy: null,
     reviewNote: null,
@@ -563,7 +581,7 @@ export async function recordAdvance(memberId, amount, note) {
 // ভুল খরচ/অ্যাডভান্স ঠিক করা — চলতি মাস বা বন্ধ মাস, দুটোতেই কাজ করে
 // (ইতিহাস raw রেকর্ড থেকে live হিসাব হয়, তাই auto ঠিক হয়ে যায়)।
 
-export async function updateExpense(expenseId, { amount, category, note }) {
+export async function updateExpense(expenseId, { amount, category, note, source, expenseDate }) {
   const { db, token, me, mess } = await sessionCtx();
   requireAdmin(me);
   if (amount == null || Number(amount) <= 0)
@@ -573,12 +591,16 @@ export async function updateExpense(expenseId, { amount, category, note }) {
   const ref = doc(db, 'messes', mess.id, 'expenses', expenseId);
   const snap = await getDoc(ref);
   if (!snap.exists()) throw new Error('NOT_FOUND');
-  await updateDoc(ref, {
+  const upd = {
     amount: Number(amount),
     category: String(category).trim(),
     note: (note || '').trim() || null,
     tok: token,
-  });
+  };
+  if (source === 'own' || source === 'fund') upd.source = source;
+  const vd = validDateStr(expenseDate);
+  if (vd) upd.expenseDate = vd;
+  await updateDoc(ref, upd);
 }
 
 export async function deleteExpense(expenseId) {
@@ -636,7 +658,10 @@ export async function monthRecords(monthId) {
         category: e.category,
         note: e.note,
         by: e.submittedByName || uname(e.submittedBy),
+        byId: e.submittedBy,
         status: e.status,
+        source: e.source === 'fund' ? 'fund' : 'own',
+        expenseDate: e.expenseDate || null,
         at: iso(e.createdAt),
       })),
     advances: aSnap.docs
@@ -656,7 +681,7 @@ export async function monthRecords(monthId) {
 // ---------- payments (ফান্ডে জমা / ফান্ড থেকে পরিশোধ) ----------
 // kind 'in': মেম্বার → ফান্ডে জমা দিলো; 'out': ফান্ড → মেম্বারকে দিলো।
 
-export async function recordPayment(monthId, memberId, kind, amount, note) {
+export async function recordPayment(monthId, memberId, kind, amount, note, paymentDate) {
   const { db, token, me, mess } = await sessionCtx();
   requireAdmin(me);
   if (kind !== 'in' && kind !== 'out') throw new Error('FORBIDDEN');
@@ -672,6 +697,7 @@ export async function recordPayment(monthId, memberId, kind, amount, note) {
     kind,
     amount: Number(amount),
     note: (note || '').trim() || null,
+    paymentDate: validDateStr(paymentDate) || todayStr(),
     recordedBy: me.id,
     createdAt: Timestamp.now(),
     tok: token,
@@ -694,10 +720,6 @@ export function fundSettlement(members, payments) {
   const total = members.reduce((s, m) => s + Number(m.paid), 0);
   const share = members.length ? total / members.length : 0;
   const fundTotal = members.reduce((s, m) => s + Number(m.advance), 0);
-  const rows = members.map((m) => {
-    const contributed = Number(m.paid) + Number(m.advance);
-    return { ...m, contributed, share, balance: contributed - share };
-  });
   const paidIn = {};
   const paidOut = {};
   for (const p of payments || []) {
@@ -705,6 +727,17 @@ export function fundSettlement(members, payments) {
     if (p.kind === 'in') paidIn[p.memberId] = (paidIn[p.memberId] || 0) + amt;
     else paidOut[p.memberId] = (paidOut[p.memberId] || 0) + amt;
   }
+  const rows = members.map((m) => {
+    // ফান্ডের টাকায় করা খরচ contribution-এ গোনা হয় না (double-count fix)
+    const ownPaid = m.paidOwn != null ? Number(m.paidOwn) : Number(m.paid);
+    const contributed = ownPaid + Number(m.advance);
+    const balance = contributed - share;
+    // পেমেন্ট বাদে net ব্যালেন্স
+    let netBalance = balance;
+    if (balance < -0.5) netBalance = balance + (paidIn[m.id] || 0);
+    else if (balance > 0.5) netBalance = balance - (paidOut[m.id] || 0);
+    return { ...m, contributed, share, balance, netBalance };
+  });
   const debtors = [];
   const creditors = [];
   for (const r of rows) {
@@ -736,7 +769,7 @@ export function fundSettlement(members, payments) {
 // একটা খরচ একাধিক মেম্বারের মধ্যে ভাগ — প্রত্যেকের নামে আলাদা রেকর্ড
 // (একই splitGroup), সব pending হয়ে অ্যাডমিনের অনুমোদনের জন্য যাবে।
 
-export async function submitSplitExpense({ amount, category, note, splits }) {
+export async function submitSplitExpense({ amount, category, note, splits, source, expenseDate }) {
   const { db, token, me, mess } = await sessionCtx();
   if (!splits || splits.length < 2)
     throw new Error('কমপক্ষে ২ জন সিলেক্ট করো');
@@ -747,6 +780,8 @@ export async function submitSplitExpense({ amount, category, note, splits }) {
   const splitTotal = splits.reduce((x, s) => x + Number(s.amount), 0);
   if (amount != null && Math.abs(Number(amount) - splitTotal) > 0.01)
     throw new Error('ভাগের যোগফল মোট টাকার সমান হতে হবে');
+  const src = source === 'fund' ? 'fund' : 'own';
+  const expDate = validDateStr(expenseDate) || todayStr();
   const month = await ensureOpenPeriod(db, mess.id, token);
   const uSnap = await getDocs(query(usersCol(db, mess.id), orderBy('createdAt')));
   const users = uSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
@@ -763,6 +798,8 @@ export async function submitSplitExpense({ amount, category, note, splits }) {
       amount: Number(s.amount),
       category: (category || '').trim() || 'অন্যান্য',
       note: (note || '').trim() || null,
+      source: src,
+      expenseDate: expDate,
       status: 'pending',
       splitGroup: groupId,
       splitIndex: i,
@@ -861,18 +898,24 @@ export async function dashboard() {
   const isAdmin = me.role === 'admin';
   const visible = (e) => isAdmin || e.submittedBy === me.id;
 
-  const members = users.map((u) => ({
-    id: u.id,
-    display_name: u.displayName,
-    role: u.role,
-    active: u.active !== false,
-    paid: expenses
-      .filter((e) => e.submittedBy === u.id && e.status === 'approved')
-      .reduce((s, e) => s + num(e.amount), 0),
-    advance: advances
-      .filter((a) => a.memberId === u.id)
-      .reduce((s, a) => s + num(a.amount), 0),
-  }));
+  const members = users.map((u) => {
+    const ownExp = expenses.filter(
+      (e) => e.submittedBy === u.id && e.status === 'approved' && e.source !== 'fund',
+    );
+    return {
+      id: u.id,
+      display_name: u.displayName,
+      role: u.role,
+      active: u.active !== false,
+      paid: expenses
+        .filter((e) => e.submittedBy === u.id && e.status === 'approved')
+        .reduce((s, e) => s + num(e.amount), 0),
+      paidOwn: ownExp.reduce((s, e) => s + num(e.amount), 0),
+      advance: advances
+        .filter((a) => a.memberId === u.id)
+        .reduce((s, a) => s + num(a.amount), 0),
+    };
+  });
 
   const expJson = (e) => ({
     id: e.id,
@@ -880,6 +923,9 @@ export async function dashboard() {
     category: e.category,
     note: e.note,
     by: e.submittedByName,
+    byId: e.submittedBy,
+    source: e.source === 'fund' ? 'fund' : 'own',
+    expenseDate: e.expenseDate || null,
     at: iso(e.createdAt),
   });
 
@@ -889,6 +935,7 @@ export async function dashboard() {
     kind: p.kind,
     amount: num(p.amount),
     note: p.note,
+    paymentDate: p.paymentDate || null,
     at: iso(p.createdAt),
   });
 
@@ -941,6 +988,10 @@ export async function dashboard() {
           })
       : [],
     payments: payments.map(payJson),
+    approvedExpenses: expenses
+      .filter((e) => e.status === 'approved')
+      .map(expJson)
+      .sort((a, b) => (a.expenseDate || a.at || '').localeCompare(b.expenseDate || b.at || '')),
     byCategory,
     totals: {
       approved: expenses
@@ -972,7 +1023,7 @@ export async function monthHistory() {
       getDocs(query(advancesCol(db, mess.id), where('monthId', '==', m.id))),
       getDocs(query(paymentsCol(db, mess.id), where('monthId', '==', m.id))),
     ]);
-    const expenses = eSnap.docs.map((d) => d.data());
+    const expenses = eSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
     const advances = aSnap.docs.map((d) => d.data());
     const payments = pSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
     const byCatMap = {};
@@ -996,6 +1047,20 @@ export async function monthHistory() {
         .filter((e) => e.status === 'approved')
         .reduce((s, e) => s + num(e.amount), 0),
       total_advance: advances.reduce((s, a) => s + num(a.amount), 0),
+      expenses: expenses
+        .filter((e) => e.status === 'approved')
+        .map((e) => ({
+          id: e.id || null,
+          amount: num(e.amount),
+          category: e.category,
+          note: e.note,
+          by: e.submittedByName,
+          byId: e.submittedBy,
+          source: e.source === 'fund' ? 'fund' : 'own',
+          expenseDate: e.expenseDate || null,
+          at: iso(e.createdAt),
+        }))
+        .sort((a, b) => (a.expenseDate || a.at || '').localeCompare(b.expenseDate || b.at || '')),
       byCategory: Object.entries(byCatMap)
         .map(([category, total]) => ({ category, total }))
         .sort((a, b) => b.total - a.total),
@@ -1005,6 +1070,7 @@ export async function monthHistory() {
         kind: p.kind,
         amount: num(p.amount),
         note: p.note,
+        paymentDate: p.paymentDate || null,
         at: iso(p.createdAt),
       })),
       members: users.map((u) => ({
@@ -1014,6 +1080,9 @@ export async function monthHistory() {
         active: u.active,
         paid: expenses
           .filter((e) => e.submittedBy === u.id && e.status === 'approved')
+          .reduce((s, e) => s + num(e.amount), 0),
+        paidOwn: expenses
+          .filter((e) => e.submittedBy === u.id && e.status === 'approved' && e.source !== 'fund')
           .reduce((s, e) => s + num(e.amount), 0),
         advance: advances
           .filter((a) => a.memberId === u.id)
